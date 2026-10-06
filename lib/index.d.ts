@@ -1619,6 +1619,13 @@ interface Config {
   probeConsent?: boolean;
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean;
+  /**
+   * Register the `workbuddy_search` host tool. On by default; the tool is
+   * additive and spends nothing until a conversation calls it.
+   */
+  searchTool?: boolean;
+  /** Per-query result cap for the search tool. */
+  searchMaxResults?: number;
 }
 declare const Config: z<Config>;
 /**

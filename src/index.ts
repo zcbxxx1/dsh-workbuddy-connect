@@ -37,6 +37,11 @@ import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
+import {
+  DEFAULT_SEARCH_MAX_RESULTS,
+  registerWorkBuddySearchTool,
+  WORKBUDDY_SEARCH_TOOL,
+} from './search-tool.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -235,6 +240,13 @@ export interface Config {
   probeConsent?: boolean
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean
+  /**
+   * Register the `workbuddy_search` host tool. On by default; the tool is
+   * additive and spends nothing until a conversation calls it.
+   */
+  searchTool?: boolean
+  /** Per-query result cap for the search tool. */
+  searchMaxResults?: number
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -246,12 +258,26 @@ const PROBE_CONSENT_FIELD = z.boolean().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
 const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
+/**
+ * Whether to register the `workbuddy_search` host tool.
+ *
+ * On by default: the tool is additive and costs nothing until a conversation
+ * calls it. Off is for a host whose own `web_search` should be the only search
+ * surface, and for anyone who would rather not spend WorkBuddy credit there.
+ */
+const SEARCH_TOOL_FIELD = z.boolean().default(true)
+  .description('Register the workbuddy_search tool (searches the web through the signed-in WorkBuddy account)')
+/** Per-query result cap for the search tool. */
+const SEARCH_MAX_RESULTS_FIELD = z.number().default(DEFAULT_SEARCH_MAX_RESULTS)
+  .description(`Maximum results returned per search query (default ${DEFAULT_SEARCH_MAX_RESULTS})`)
 
 export const Config: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   authFileAI: AUTH_FILE_AI_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
+  searchTool: SEARCH_TOOL_FIELD,
+  searchMaxResults: SEARCH_MAX_RESULTS_FIELD,
 })
 
 /**
@@ -742,6 +768,41 @@ export function apply(ctx: Context, config: Config): void {
     runtime.catalogError = undefined
     runtime.catalog.setVisible(true)
     runtime.invalidate()
+  }
+
+  // Search rides the *host tool* surface, not the LLM adapter: WorkBuddy's
+  // search endpoint is a separate JSON API, so no provider route can carry it.
+  // Injected optionally — a headless or older profile has no `tools` service,
+  // and search being absent must never take the model providers down with it.
+  if (config.searchTool) {
+    ctx.inject(['tools'], toolsCtx => {
+      try {
+        const disposer = registerWorkBuddySearchTool(toolsCtx, toolsCtx.tools, {
+          // Same accessor the chat path uses, so sign-out and token rotation
+          // are observed identically. CN first: it is the provider order the
+          // model picker shows, and a CN credential is what most users have.
+          credential: async () => {
+            for (const runtime of runtimes) {
+              const credential = await runtime.store.current()
+              if (credential !== undefined) return credential
+            }
+            return undefined
+          },
+          ...config.searchMaxResults === undefined ? {} : { maxResults: config.searchMaxResults },
+        })
+        if (disposer !== undefined) {
+          try {
+            ctx.effect(() => disposer)
+          } catch {
+            // Already disposed: release the registration directly.
+            disposer()
+          }
+        }
+      } catch (error: unknown) {
+        // Search is additive; a registration failure is reported, not fatal.
+        ctx.logger.warn(`dsh-workbuddy-connect: ${WORKBUDDY_SEARCH_TOOL} registration failed`, error)
+      }
+    })
   }
 
   ctx.inject(['webServer'], webCtx => {
