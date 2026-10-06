@@ -42,6 +42,7 @@ import {
   registerWorkBuddySearchTool,
   WORKBUDDY_SEARCH_TOOL,
 } from './search-tool.ts'
+import { registerWorkBuddySearchGatewayRoute } from './search-gateway.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -772,6 +773,19 @@ export function apply(ctx: Context, config: Config): void {
 
   // Search rides the *host tool* surface, not the LLM adapter: WorkBuddy's
   // search endpoint is a separate JSON API, so no provider route can carry it.
+  // The same resolver also feeds the Anthropic-Messages gateway route below.
+  //
+  // CN first: it is the provider order the model picker shows, and a machine
+  // with only the international app still resolves, because a variant with no
+  // credential simply reads as signed out and the loop moves on.
+  const resolveSearchCredential = async (): Promise<WorkBuddyCredential | undefined> => {
+    for (const runtime of runtimes) {
+      const credential = await runtime.store.current()
+      if (credential !== undefined) return credential
+    }
+    return undefined
+  }
+
   // Injected optionally — a headless or older profile has no `tools` service,
   // and search being absent must never take the model providers down with it.
   if (config.searchTool) {
@@ -779,15 +793,8 @@ export function apply(ctx: Context, config: Config): void {
       try {
         const disposer = registerWorkBuddySearchTool(toolsCtx, toolsCtx.tools, {
           // Same accessor the chat path uses, so sign-out and token rotation
-          // are observed identically. CN first: it is the provider order the
-          // model picker shows, and a CN credential is what most users have.
-          credential: async () => {
-            for (const runtime of runtimes) {
-              const credential = await runtime.store.current()
-              if (credential !== undefined) return credential
-            }
-            return undefined
-          },
+          // are observed identically on both paths.
+          credential: resolveSearchCredential,
           ...config.searchMaxResults === undefined ? {} : { maxResults: config.searchMaxResults },
         })
         if (disposer !== undefined) {
@@ -809,6 +816,15 @@ export function apply(ctx: Context, config: Config): void {
     // One update route for the whole bundle: it answers this npm package's
     // public version metadata only, so it is per-plugin, not per-variant.
     registerWorkBuddyUpdateRoute(webCtx, { currentVersion: WORKBUDDY_CONNECT_VERSION })
+    // The Anthropic-Messages search endpoint, so DSH's own `web_search` tool
+    // can be pointed at this plugin instead of a DeepSeek endpoint:
+    //   web-search-deepseek.baseURL = <dsh web origin>/plugins/dsh-workbuddy-connect/search
+    // Registered even when the host tool is off — the two are alternative
+    // routes to the same capability, and a user may want either.
+    registerWorkBuddySearchGatewayRoute(webCtx, {
+      credential: resolveSearchCredential,
+      ...config.searchMaxResults === undefined ? {} : { maxResults: config.searchMaxResults },
+    })
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,
