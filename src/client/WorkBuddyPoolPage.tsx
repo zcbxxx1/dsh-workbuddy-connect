@@ -98,6 +98,19 @@ const primaryButtonStyle: CSSProperties = {
   background: 'var(--dsw-alias-brand-primary)',
   color: 'var(--dsw-alias-label-primary)',
 }
+/** A bare link-style action, for the escape hatch inside a row. */
+const textButtonStyle: CSSProperties = {
+  border: 0,
+  padding: 0,
+  background: 'transparent',
+  color: 'var(--dsw-alias-brand-primary)',
+  font: 'inherit',
+  fontSize: 12,
+  lineHeight: '18px',
+  cursor: 'pointer',
+  textDecoration: 'underline',
+  textUnderlineOffset: 2,
+}
 
 /** One account row: a grid so every column lines up across rows. */
 const accountRowStyle: CSSProperties = {
@@ -192,37 +205,147 @@ function Chip({ children, style }: { children: ReactNode, style?: CSSProperties 
   return <span style={{ ...chipStyle, ...style }}>{children}</span>
 }
 
-/** One account row. */
-function AccountRow({ account, t, disabled, onToggle }: {
+// --- the switch ------------------------------------------------------------
+
+const switchTrackStyle: CSSProperties = {
+  boxSizing: 'border-box',
+  flex: '0 0 auto',
+  display: 'inline-flex',
+  alignItems: 'center',
+  width: 36,
+  height: 20,
+  padding: 2,
+  borderRadius: 10,
+  border: '1px solid var(--dsw-alias-border-l2)',
+  background: 'var(--dsw-alias-bg-layer-2)',
+  cursor: 'pointer',
+  transition: 'background 120ms ease, border-color 120ms ease',
+}
+const switchTrackOnStyle: CSSProperties = {
+  border: '1px solid var(--dsw-alias-brand-primary)',
+  background: 'var(--dsw-alias-brand-primary)',
+  justifyContent: 'flex-end',
+}
+const switchTrackPausedStyle: CSSProperties = {
+  // A paused switch is deliberately not the "off" grey: it is off because the
+  // upstream refused it, not because the user chose so, and the row says which.
+  border: '1px dashed var(--dsw-alias-border-l2)',
+  background: 'transparent',
+  cursor: 'not-allowed',
+}
+const switchKnobStyle: CSSProperties = {
+  width: 14,
+  height: 14,
+  borderRadius: '50%',
+  // The app's own base colour, so the knob reads as a cut-out on either track.
+  background: 'var(--dsw-alias-bg-base)',
+  boxShadow: '0 1px 2px rgba(0, 0, 0, 0.35)',
+  transition: 'transform 120ms ease',
+}
+
+/**
+ * A switch.
+ *
+ * A real `<button role="switch">` rather than a styled checkbox: the control
+ * carries no label text of its own (the row's name is the label), so the
+ * accessible name has to be supplied, and `aria-checked` is what a screen
+ * reader announces for a switch. A checkbox with `appearance: none` would need
+ * the same attributes plus a hidden input to be equivalent.
+ */
+function Switch({ checked, disabled, label, title, onChange }: {
+  checked: boolean
+  disabled: boolean
+  label: string
+  title?: string | undefined
+  onChange: (next: boolean) => void
+}): ReactNode {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      {...title === undefined ? {} : { title }}
+      disabled={disabled}
+      style={{
+        ...switchTrackStyle,
+        ...checked && !disabled ? switchTrackOnStyle : {},
+        ...disabled ? switchTrackPausedStyle : {},
+        ...checked && disabled ? { justifyContent: 'flex-end' } : {},
+      }}
+      onClick={() => { onChange(!checked) }}
+    >
+      <span style={switchKnobStyle} />
+    </button>
+  )
+}
+
+/**
+ * One account row.
+ *
+ * The switch shows whether the account is SCHEDULING, which is the user's
+ * membership choice AND the account not being benched. The two are shown apart
+ * because they answer different questions: an account the user admitted stays
+ * admitted while the upstream has it rate-limited, so it comes back on its own
+ * — and that is why the paused switch is disabled rather than merely off. A
+ * switch the user could click while paused would be a control whose state does
+ * not follow the click.
+ */
+function AccountRow({ account, t, disabled, onToggle, onRemove }: {
   account: WorkBuddyWebPoolAccount
   t: WorkBuddyPoolPageProps['t']
   disabled: boolean
   onToggle: (id: string, member: boolean) => void
+  onRemove: (id: string) => void
 }): ReactNode {
   const expiry = account.expiresAtMs > 0
     ? new Date(account.expiresAtMs).toLocaleDateString()
     : t('poolNoExpiry')
-  const excluded = account.excludedBy !== undefined
+  const paused = account.excludedBy !== undefined
+  const scheduling = account.member && !paused
   return (
     <div style={accountRowStyle}>
-      <input
-        type="checkbox"
-        checked={account.member}
-        disabled={disabled}
-        aria-label={account.name === '' ? account.id : account.name}
-        onChange={event => { onToggle(account.id, event.target.checked) }}
+      <Switch
+        checked={scheduling}
+        disabled={disabled || paused}
+        label={account.name === '' ? account.id : account.name}
+        title={paused
+          ? `${t('poolPaused')} · ${account.excludedUntilMs === undefined
+              ? t('poolRecoversUnknown')
+              : `${t('poolRecoversAt')} ${new Date(account.excludedUntilMs).toLocaleString()}`}`
+          : undefined}
+        onChange={next => { onToggle(account.id, next) }}
       />
-      <span style={accountNameStyle}>{account.name === '' ? t('poolUnnamed') : account.name}</span>
-      <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      <span style={{ ...accountNameStyle, ...paused ? { opacity: 0.6 } : {} }}>
+        {account.name === '' ? t('poolUnnamed') : account.name}
+      </span>
+      <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
         {account.live ? <Chip style={chipLiveStyle}>{t('poolLive')}</Chip> : null}
-        {excluded
+        {paused
           ? (
               <Chip style={chipWarnStyle}>
-                {t('poolExcluded')}
+                {t('poolPaused')}
                 {account.excludedUntilMs === undefined
                   ? ` · ${t('poolRecoversUnknown')}`
                   : ` · ${t('poolRecoversAt')} ${new Date(account.excludedUntilMs).toLocaleString()}`}
               </Chip>
+            )
+          : null}
+        {/*
+          A paused account is still a member, so the switch above cannot take it
+          out — it is disabled. This is the way out, and it is why the row shows
+          one only while paused.
+        */}
+        {paused && account.member
+          ? (
+              <button
+                type="button"
+                style={textButtonStyle}
+                disabled={disabled}
+                onClick={() => { onRemove(account.id) }}
+              >
+                {t('poolRemoveFromPool')}
+              </button>
             )
           : null}
       </span>
@@ -236,7 +359,7 @@ function AccountRow({ account, t, disabled, onToggle }: {
             ? t('poolCreditsUnlimited')
             : account.credits ?? t('poolCreditsUnknown')}
         </span>
-        {excluded && account.excludedReason !== undefined
+        {paused && account.excludedReason !== undefined
           ? <span style={dangerTextStyle} title={account.excludedReason}>· {account.excludedReason.slice(0, 80)}</span>
           : null}
       </span>
@@ -407,12 +530,17 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
     }
   }, [document?.poolKey])
 
+  /** The account ids currently admitted, in the host's own order. */
+  const memberIds = useCallback(
+    (): string[] => (document?.accounts ?? []).filter(account => account.member).map(account => account.id),
+    [document?.accounts],
+  )
+
   const toggleMember = useCallback((id: string, member: boolean) => {
-    const current = document?.accounts ?? []
-    const ids = current.filter(account => account.member).map(account => account.id)
+    const ids = memberIds()
     const next = member ? [...new Set([...ids, id])] : ids.filter(existing => existing !== id)
     void act('set-members', { accountIds: next })
-  }, [act, document?.accounts])
+  }, [act, memberIds])
 
   if (document === undefined) {
     return (
@@ -443,29 +571,29 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
         <div style={cardBodyStyle}>
           <p style={hintStyle}>{t('poolIntro')}</p>
           <div style={{ display: 'flex', flexDirection: 'column', marginTop: 8 }}>
-            <label style={switchRowStyle}>
-              <input
-                type="checkbox"
+            <div style={switchRowStyle}>
+              <Switch
                 checked={document.enabled}
                 disabled={busy}
-                onChange={event => { void act('set-enabled', { enabled: event.target.checked }) }}
+                label={t('poolEnabled')}
+                onChange={next => { void act('set-enabled', { enabled: next }) }}
               />
               <span style={switchCopyStyle}>
                 <span style={switchLabelStyle}>{t('poolEnabled')}</span>
               </span>
-            </label>
-            <label style={switchRowStyle}>
-              <input
-                type="checkbox"
+            </div>
+            <div style={switchRowStyle}>
+              <Switch
                 checked={document.autoCheckin}
                 disabled={busy}
-                onChange={event => { void act('set-auto-checkin', { enabled: event.target.checked }) }}
+                label={t('poolAutoCheckin')}
+                onChange={next => { void act('set-auto-checkin', { enabled: next }) }}
               />
               <span style={switchCopyStyle}>
                 <span style={switchLabelStyle}>{t('poolAutoCheckin')}</span>
                 <span style={hintStyle}>{t('poolAutoCheckinHint')}</span>
               </span>
-            </label>
+            </div>
           </div>
         </div>
       </section>
@@ -494,6 +622,7 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
                     t={t}
                     disabled={busy}
                     onToggle={toggleMember}
+                    onRemove={id => { void act('set-members', { accountIds: memberIds().filter(existing => existing !== id) }) }}
                   />
                 ))}
           </div>

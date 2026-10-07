@@ -166,6 +166,8 @@ export const en = {
   poolImportReadable: 'ready',
   poolStateOn: 'on',
   poolStateOff: 'off',
+  poolPaused: 'paused',
+  poolRemoveFromPool: 'Remove from pool',
   poolWorking: 'Working…',
   poolCheckinNever: 'No check-in has run yet.',
 } as const
@@ -333,6 +335,8 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   poolImportReadable: '可用',
   poolStateOn: '已开启',
   poolStateOff: '已关闭',
+  poolPaused: '已暂停',
+  poolRemoveFromPool: '移出账号池',
   poolWorking: '处理中…',
   poolCheckinNever: '尚未执行过签到。',
 }
