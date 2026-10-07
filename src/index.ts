@@ -796,6 +796,51 @@ export function apply(ctx: Context, config: Config): void {
   /** The most recent check-in run, for the page to render. */
   let lastCheckin: readonly WorkBuddyWebCheckinRow[] | undefined
 
+  /**
+   * Remaining credit per account, with the failure that hid it.
+   *
+   * Cached because the page polls every 15s and the billing route is a real
+   * upstream call per account: without a TTL a page left open would issue four
+   * requests every fifteen seconds forever. Five minutes is far shorter than
+   * any credit movement that matters to this view.
+   *
+   * A failure is cached too — the route answered HTTP 500 for some accounts
+   * here, and retrying a broken endpoint on every poll would be pure noise.
+   */
+  const creditsByAccount = new Map<string, { atMs: number, credits?: number, unlimited?: boolean, error?: string }>()
+  const CREDITS_TTL_MS = 5 * 60_000
+
+  /** Read one account's credit, from cache when fresh. Never throws. */
+  const creditsFor = async (
+    runtime: VariantRuntime,
+    accountId: string,
+  ): Promise<{ credits?: number, unlimited?: boolean, error?: string }> => {
+    const cached = creditsByAccount.get(accountId)
+    const now = Date.now()
+    if (cached !== undefined && now - cached.atMs < CREDITS_TTL_MS) return cached
+
+    let entry: { atMs: number, credits?: number, unlimited?: boolean, error?: string }
+    try {
+      const credential = await runtime.accountPool.credentialFor(accountId)
+      if (credential === undefined) {
+        entry = { atMs: now, error: 'no stored credential for this account' }
+      } else {
+        const credits = await runtime.client.fetchCredits(credential)
+        entry = {
+          atMs: now,
+          credits: credits.total,
+          ...credits.unlimited === true ? { unlimited: true } : {},
+        }
+      }
+    } catch (error: unknown) {
+      // A failed read is a report, never a zero: `0` would assert the account
+      // is empty, which is the opposite of "we could not find out".
+      entry = { atMs: now, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }
+    }
+    creditsByAccount.set(accountId, entry)
+    return entry
+  }
+
   /** Every discovered account across both products, as the page sees it. */
   const poolDocument = async (): Promise<WorkBuddyPoolDocument> => {
     // Membership is a bundle-level decision stored in the first runtime's file,
@@ -806,6 +851,7 @@ export function apply(ctx: Context, config: Config): void {
       const snap = await runtime.accountPool.snapshot()
       for (const account of snap.accounts) {
         const probe = runtime.poolStore.probeOf(account.id)
+        const credits = await creditsFor(runtime, account.id)
         accounts.push({
           id: account.id,
           name: account.name,
@@ -815,6 +861,9 @@ export function apply(ctx: Context, config: Config): void {
           ...probe?.message === undefined || probe.message === '' ? {} : { excludedReason: probe.message },
           expiresAtMs: account.expiresAtMs,
           variant: runtime.variant.id,
+          ...credits.credits === undefined ? {} : { credits: credits.credits },
+          ...credits.unlimited === true ? { creditsUnlimited: true } : {},
+          ...credits.error === undefined ? {} : { creditsError: credits.error },
         })
       }
     }

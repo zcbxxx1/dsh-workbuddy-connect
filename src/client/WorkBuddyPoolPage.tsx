@@ -60,6 +60,21 @@ function AccountRow({ account, t, disabled, onToggle }: {
       {account.live ? <span style={mutedStyle}>· {t('poolLive')}</span> : null}
       <span style={mutedStyle}>· {t('poolVariant')}: {account.variant}</span>
       <span style={mutedStyle}>· {t('poolExpires')}: {expiry}</span>
+      {/*
+        Credits: `unlimited` first, then a number, then "unknown" — never a
+        zero. The billing route fails for some accounts (HTTP 500 on two of
+        four here), and rendering that as 0 would assert an empty account.
+        The reason rides the tooltip so the row stays one line.
+      */}
+      {account.creditsUnlimited === true
+        ? <span style={mutedStyle}>· {t('poolCredits')}: {t('poolCreditsUnlimited')}</span>
+        : account.credits === undefined
+          ? (
+              <span style={mutedStyle} title={account.creditsError ?? ''}>
+                · {t('poolCredits')}: {t('poolCreditsUnknown')}
+              </span>
+            )
+          : <span style={mutedStyle}>· {t('poolCredits')}: {account.credits}</span>}
       {account.excludedBy === undefined
         ? null
         : (

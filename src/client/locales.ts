@@ -149,6 +149,9 @@ export const en = {
   poolCheckin_already: 'already checked in today',
   poolCheckin_inactive: 'activity not open',
   poolCheckin_failed: 'failed',
+  poolCredits: 'credits',
+  poolCreditsUnknown: 'unavailable',
+  poolCreditsUnlimited: 'unlimited',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -297,4 +300,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   poolCheckin_already: '今日已签到',
   poolCheckin_inactive: '活动未开启',
   poolCheckin_failed: '失败',
+  poolCredits: '积分',
+  poolCreditsUnknown: '读取失败',
+  poolCreditsUnlimited: '不限',
 }

@@ -62,6 +62,19 @@ export interface WorkBuddyWebPoolAccount {
   expiresAtMs: number
   /** Which product this account belongs to (`workbuddy` / `workbuddy-ai`). */
   variant: string
+  /**
+   * Remaining credit, when the billing route answered.
+   *
+   * ABSENT is deliberately not zero: the route fails for some accounts
+   * (observed: HTTP 500 on two of four on this machine), and a page rendering
+   * that as `0` would assert the account is empty. The reason travels in
+   * {@link creditsError} so the row can say which of the two it is.
+   */
+  credits?: number
+  /** Whether the account's cycle quota is uncapped. */
+  creditsUnlimited?: boolean
+  /** Why the credit figure is missing, when it is. */
+  creditsError?: string
 }
 
 /** One account's check-in result, as the page lists it. */
