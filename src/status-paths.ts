@@ -34,6 +34,80 @@ export const WORKBUDDY_AI_PROBE_PATH = '/plugins/dsh-workbuddy-connect/ai/probe'
  */
 export const WORKBUDDY_UPDATE_PATH = '/plugins/dsh-workbuddy-connect/update'
 
+/**
+ * The account pool's control route, shared by both halves.
+ *
+ * One route rather than one per variant: the pool page lists both products'
+ * accounts in a single view, so a per-variant path would make the page read two
+ * documents to render one list. Each action carries the variant it targets when
+ * it needs to be specific.
+ */
+export const WORKBUDDY_POOL_PATH = '/plugins/dsh-workbuddy-connect/pool'
+
+/** One discovered account, as the pool page shows it. */
+export interface WorkBuddyWebPoolAccount {
+  /** Stable account id (`uid:enterpriseId`). */
+  id: string
+  /** Human name, or `''` when the desktop app recorded none. */
+  name: string
+  /** Whether this came from the app's live sign-in file. */
+  live: boolean
+  /** Whether the user admitted this account to the pool. */
+  member: boolean
+  /** Why it cannot serve right now; absent when it can. */
+  excludedBy?: string
+  /** The upstream's own words for the exclusion, already redacted. */
+  excludedReason?: string
+  /** Credential expiry, epoch ms. */
+  expiresAtMs: number
+  /** Which product this account belongs to (`workbuddy` / `workbuddy-ai`). */
+  variant: string
+}
+
+/** One account's check-in result, as the page lists it. */
+export interface WorkBuddyWebCheckinRow {
+  accountId: string
+  accountName: string
+  status: 'claimed' | 'already' | 'inactive' | 'failed'
+  credit?: number
+  streakDays?: number
+  message?: string
+}
+
+/** The pool document the page renders. */
+export interface WorkBuddyPoolDocument {
+  /** Whether rotation is on. */
+  enabled: boolean
+  /** Whether the host checks in at startup. */
+  autoCheckin: boolean
+  accounts: readonly WorkBuddyWebPoolAccount[]
+  /** The most recent check-in run, when one has happened this process. */
+  lastCheckin?: readonly WorkBuddyWebCheckinRow[]
+  /**
+   * In-process key authorizing the write actions. Handed to the page with the
+   * document (the page is same-origin and already passed the loopback guard);
+   * never persisted, rotates per process.
+   */
+  poolKey: string
+}
+
+/** The write actions the page may request. */
+export type WorkBuddyPoolAction =
+  | 'set-enabled'
+  | 'set-members'
+  | 'rediscover'
+  | 'checkin'
+  | 'set-auto-checkin'
+
+/** An action's answer: a fresh document, or a reason it could not be done. */
+export interface WorkBuddyPoolActionAnswer {
+  state: 'ok' | 'failed'
+  document?: WorkBuddyPoolDocument
+  reason?: string
+  /** Check-in rows, present only for the `checkin` action. */
+  rows?: readonly WorkBuddyWebCheckinRow[]
+}
+
 /** One model's recorded probe observation, as the card displays it. */
 export interface WorkBuddyWebProbeModel {
   id: string

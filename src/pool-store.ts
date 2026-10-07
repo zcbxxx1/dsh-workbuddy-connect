@@ -42,6 +42,21 @@ interface PoolDocument {
   members: string[]
   /** Account id → its last measurement. */
   probes: Record<string, StoredProbe>
+  /**
+   * Whether rotation is on.
+   *
+   * Stored here rather than in the plugin config because DSH 0.2.0 removed the
+   * settings-section API this plugin used to persist preferences through, so a
+   * toggle the user flips at runtime has nowhere else to be written. The
+   * `accountPool` config field still provides the initial value.
+   *
+   * ABSENT means "never set", which the reader resolves to the config default
+   * rather than to `false` — otherwise turning the feature on in the profile
+   * would be silently overridden by this file the first time it is read.
+   */
+  enabled?: boolean
+  /** Whether the host attempts check-in at startup. Absent means "not set". */
+  autoCheckin?: boolean
 }
 
 /** Basename of the pool file inside the Harness home. */
@@ -94,7 +109,15 @@ export function readPoolDocument(path: string): PoolDocument {
       }
     }
   }
-  return { version: POOL_FORMAT_VERSION, members, probes }
+  return {
+    version: POOL_FORMAT_VERSION,
+    members,
+    probes,
+    // Only a real boolean is adopted; anything else stays absent so the config
+    // default keeps applying.
+    ...typeof record['enabled'] === 'boolean' ? { enabled: record['enabled'] } : {},
+    ...typeof record['autoCheckin'] === 'boolean' ? { autoCheckin: record['autoCheckin'] } : {},
+  }
 }
 
 /** Write the document atomically, creating the directory when needed. */
@@ -146,13 +169,42 @@ export class WorkBuddyPoolStore {
     return [...this.load().members]
   }
 
+  /**
+   * Whether rotation is on, or `undefined` when the user never set it.
+   *
+   * `undefined` rather than `false` on purpose: the caller substitutes the
+   * config default, so a profile that enables the pool is not silently
+   * overridden by an empty state file.
+   */
+  enabled(): boolean | undefined {
+    return this.load().enabled
+  }
+
+  /** Persist the rotation toggle. */
+  setEnabled(enabled: boolean): void {
+    this.write({ ...this.load(), enabled })
+  }
+
+  /** Whether startup auto check-in is on, or `undefined` when never set. */
+  autoCheckin(): boolean | undefined {
+    return this.load().autoCheckin
+  }
+
+  /** Persist the startup auto check-in toggle. */
+  setAutoCheckin(enabled: boolean): void {
+    this.write({ ...this.load(), autoCheckin: enabled })
+  }
+
+  /** Write the document and refresh the cache. */
+  private write(document: PoolDocument): void {
+    writePoolDocument(this.path, document)
+    this.cached = document
+    this.cachedMtimeMs = Date.now()
+  }
+
   /** Replace the member list. This is the only writer of a user decision. */
   setMembers(ids: readonly string[]): void {
-    const document = this.load()
-    const next: PoolDocument = { ...document, members: [...new Set(ids.filter(id => id !== ''))] }
-    writePoolDocument(this.path, next)
-    this.cached = next
-    this.cachedMtimeMs = Date.now()
+    this.write({ ...this.load(), members: [...new Set(ids.filter(id => id !== ''))] })
   }
 
   /** One account's last measurement, or undefined when never measured. */

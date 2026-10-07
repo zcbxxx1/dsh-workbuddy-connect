@@ -127,6 +127,36 @@ export interface WorkBuddyCredits {
   cycleResetTime?: string
 }
 
+/**
+ * Daily check-in activity state.
+ *
+ * Ported from `dsh-connect-workbuddy` (`src/upstream.ts`, MIT, Copyright (c)
+ * 2026 LaoDing) — see THIRD_PARTY_NOTICES.md.
+ *
+ * `active` is the upstream's own "the window is open" flag and is deliberately
+ * separate from `todayCheckedIn`: a closed window means claiming is impossible,
+ * which is a different report from "already claimed today".
+ */
+export interface WorkBuddyCheckinStatus {
+  active: boolean
+  todayCheckedIn: boolean
+  streakDays: number
+  dailyCredit: number
+  todayCredit: number
+  isStreakDay: boolean
+  nextStreakDay: number
+  streakBonusDays: number
+  streakBonusCredit: number
+  claimButtonText?: string
+}
+
+/** The result of claiming one day's check-in reward. */
+export interface WorkBuddyCheckinClaim {
+  credit: number
+  streakDays: number
+  isStreakDay: boolean
+}
+
 /** Token refresh answer; fields the upstream omits stay absent. */
 export interface WorkBuddyRefreshOutcome {
   accessToken: string
@@ -1028,6 +1058,69 @@ export class WorkBuddyUpstreamClient {
     // acceptance signal, not a completion.
     const streamed = await readFirstEvent(response)
     return { status: response.status, streamed }
+  }
+
+  /**
+   * Read the daily check-in activity state.
+   *
+   * Ported from `dsh-connect-workbuddy` (`src/upstream.ts`, MIT). Read-only:
+   * this spends nothing and is safe to call on every page load.
+   */
+  async fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus> {
+    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/checkin-activity-status`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: '{}',
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const numberField = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    return {
+      active: data['active'] === true,
+      todayCheckedIn: data['today_checked_in'] === true,
+      streakDays: numberField('streak_days'),
+      dailyCredit: numberField('daily_credit'),
+      todayCredit: numberField('today_credit'),
+      isStreakDay: data['is_streak_day'] === true,
+      nextStreakDay: numberField('next_streak_day'),
+      streakBonusDays: numberField('streak_bonus_days'),
+      streakBonusCredit: numberField('streak_bonus_credit'),
+      ...typeof data['claim_button_text'] === 'string' && data['claim_button_text'] !== ''
+        ? { claimButtonText: data['claim_button_text'] }
+        : {},
+    }
+  }
+
+  /**
+   * Claim today's check-in reward.
+   *
+   * A MUTATION that really grants credit, so it is only ever called from an
+   * explicit user action or the opt-in auto-check-in path — never from a
+   * read-only refresh. Callers must check {@link fetchCheckinStatus} first: an
+   * already-claimed day is reported rather than re-claimed.
+   */
+  async claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim> {
+    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/daily-checkin`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: '{}',
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const numberField = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    return {
+      credit: numberField('credit'),
+      streakDays: numberField('streak_days'),
+      isStreakDay: data['is_streak_day'] === true,
+    }
   }
 }
 

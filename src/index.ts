@@ -45,6 +45,10 @@ import {
 import { registerWorkBuddySearchGatewayRoute } from './search-gateway.ts'
 import { WorkBuddyAccountPool } from './account-pool-runtime.ts'
 import { WorkBuddyPoolStore, workbuddyPoolPath } from './pool-store.ts'
+import { createPoolKey, registerWorkBuddyPoolRoute } from './pool-route.ts'
+import { checkinAccounts, type WorkBuddyCheckinRow } from './checkin.ts'
+import { accountIdOf } from './account-discovery.ts'
+import type { WorkBuddyPoolDocument, WorkBuddyWebCheckinRow, WorkBuddyWebPoolAccount } from './status-paths.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -256,6 +260,11 @@ export interface Config {
    * desktop sign-in pays, exactly as before.
    */
   accountPool?: boolean
+  /**
+   * Attempt a daily check-in for every pool member at startup. Off by default:
+   * check-in really grants credit, so it is opt-in rather than assumed.
+   */
+  autoCheckin?: boolean
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -288,6 +297,15 @@ const SEARCH_MAX_RESULTS_FIELD = z.number().default(DEFAULT_SEARCH_MAX_RESULTS)
  */
 const ACCOUNT_POOL_FIELD = z.boolean().default(false)
   .description('Route requests across a pool of local WorkBuddy accounts, with automatic failover')
+/**
+ * Whether to check in every pool member at startup.
+ *
+ * Off by default. Check-in is a real mutation that grants credit, so the plugin
+ * never does it unless the user asked — and the upstream currently reports the
+ * activity closed, so the normal outcome is "not active" rather than a claim.
+ */
+const AUTO_CHECKIN_FIELD = z.boolean().default(false)
+  .description('Attempt the daily WorkBuddy check-in for pool members at startup')
 
 export const Config: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
@@ -297,6 +315,7 @@ export const Config: z<Config> = z.object({
   searchTool: SEARCH_TOOL_FIELD,
   searchMaxResults: SEARCH_MAX_RESULTS_FIELD,
   accountPool: ACCOUNT_POOL_FIELD,
+  autoCheckin: AUTO_CHECKIN_FIELD,
 })
 
 /**
@@ -479,7 +498,11 @@ function createVariantRuntime(
     // Same per-product key provider the store uses, built by the shared helper,
     // so discovery can only ever open its own product's envelopes.
     keyProvider: atRestKeyProviderFor(variant),
-    enabled: () => current().accountPool === true,
+    // The stored toggle wins over the config field once the user has flipped it:
+    // DSH 0.2.0 removed the settings API that used to persist preferences, so a
+    // runtime toggle is written here instead. Absent means "never set", which
+    // falls back to the profile's own value.
+    enabled: () => poolStore.enabled() ?? current().accountPool === true,
     explicitPath: () => configuredAuthFile(current(), variant),
   })
   const probeService = new WorkBuddyProbeService({
@@ -732,6 +755,112 @@ export function apply(ctx: Context, config: Config): void {
   // Same-origin routes backing each Plugin-configuration card; the webServer
   // service is optional (a headless profile serves no browser).
   const probeKey = createProbeKey()
+  /**
+   * Control key for the pool route, minted alongside the probe key.
+   *
+   * One key for the whole bundle rather than one per variant: the pool page is a
+   * single view over both products, so it authenticates once and its writes are
+   * fanned out to the runtimes it targets.
+   */
+  const poolKey = createPoolKey()
+  /**
+   * Rotation and auto check-in as the USER last set them.
+   *
+   * Held here, and persisted in the first runtime's pool file, because DSH
+   * 0.2.0 removed the settings-section API that used to carry preferences. The
+   * config field supplies the initial value; once the user flips the switch the
+   * stored value wins, so a toggle survives a restart.
+   */
+  const poolSettings = {
+    enabled: (): boolean => {
+      const stored = runtimes[0]?.poolStore.enabled()
+      return stored ?? config.accountPool === true
+    },
+    setEnabled: (enabled: boolean): void => {
+      for (const runtime of runtimes) runtime.poolStore.setEnabled(enabled)
+    },
+    setMembers: (ids: readonly string[]): void => {
+      // Membership is per account and account ids are unique across products,
+      // so every runtime's store gets the same list: whichever variant discovers
+      // that account will see it as a member.
+      for (const runtime of runtimes) runtime.poolStore.setMembers(ids)
+    },
+    autoCheckin: (): boolean => {
+      const stored = runtimes[0]?.poolStore.autoCheckin()
+      return stored ?? config.autoCheckin === true
+    },
+    setAutoCheckin: (enabled: boolean): void => {
+      for (const runtime of runtimes) runtime.poolStore.setAutoCheckin(enabled)
+    },
+  }
+  /** The most recent check-in run, for the page to render. */
+  let lastCheckin: readonly WorkBuddyWebCheckinRow[] | undefined
+
+  /** Every discovered account across both products, as the page sees it. */
+  const poolDocument = async (): Promise<WorkBuddyPoolDocument> => {
+    // Membership is a bundle-level decision stored in the first runtime's file,
+    // so one read answers for every account regardless of which product found it.
+    const members = new Set(runtimes[0]?.poolStore.members() ?? [])
+    const accounts: WorkBuddyWebPoolAccount[] = []
+    for (const runtime of runtimes) {
+      const snap = await runtime.accountPool.snapshot()
+      for (const account of snap.accounts) {
+        const probe = runtime.poolStore.probeOf(account.id)
+        accounts.push({
+          id: account.id,
+          name: account.name,
+          live: account.live,
+          member: members.has(account.id),
+          ...account.excludedBy === undefined ? {} : { excludedBy: account.excludedBy },
+          ...probe?.message === undefined || probe.message === '' ? {} : { excludedReason: probe.message },
+          expiresAtMs: account.expiresAtMs,
+          variant: runtime.variant.id,
+        })
+      }
+    }
+    return {
+      enabled: poolSettings.enabled(),
+      autoCheckin: poolSettings.autoCheckin(),
+      accounts,
+      ...lastCheckin === undefined ? {} : { lastCheckin },
+      poolKey,
+    }
+  }
+
+  /**
+   * Check in the given accounts (or every member when none are named).
+   *
+   * Serial across accounts and never throws: each account's outcome is a row.
+   * A closed window reports `inactive` — the upstream's current state for every
+   * account — and no claim is attempted, so this is safe to call repeatedly.
+   */
+  const runCheckin = async (ids?: readonly string[]): Promise<readonly WorkBuddyWebCheckinRow[]> => {
+    const members = runtimes[0]?.poolStore.members() ?? []
+    const targets = ids !== undefined && ids.length > 0 ? [...ids] : members
+    const rows: WorkBuddyCheckinRow[] = []
+    for (const runtime of runtimes) {
+      const found = await runtime.accountPool.list()
+      const byId = new Map(found.map(account => [accountIdOf(account.credential), account.credential]))
+      // Only the accounts THIS variant discovered: the two products' files live
+      // in the same directory but authenticate against different hosts, so an
+      // id the other variant owns must not be sent here.
+      const scoped = targets.filter(id => byId.has(id))
+      if (scoped.length === 0) continue
+      rows.push(...await checkinAccounts(scoped, {
+        credentialFor: async id => byId.get(id),
+        client: runtime.client,
+      }))
+    }
+    lastCheckin = rows.map(row => ({
+      accountId: row.accountId,
+      accountName: row.accountName,
+      status: row.status,
+      ...row.credit === undefined ? {} : { credit: row.credit },
+      ...row.streakDays === undefined ? {} : { streakDays: row.streakDays },
+      ...row.message === undefined ? {} : { message: row.message },
+    }))
+    return lastCheckin
+  }
   let setMaximumContextWindow: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
   /**
    * Whether this host's settings service carries the 0.1.2-era section API.
@@ -875,6 +1004,28 @@ export function apply(ctx: Context, config: Config): void {
       credential: resolveSearchCredential,
       ...config.searchMaxResults === undefined ? {} : { maxResults: config.searchMaxResults },
     })
+    // The account pool's page and its writes. One route for both variants: the
+    // page lists every account in a single view, so a per-variant route would
+    // make it read two documents to render one list.
+    registerWorkBuddyPoolRoute(webCtx, {
+      key: poolKey,
+      snapshot: () => poolDocument(),
+      // Rotation and auto check-in live in the pool file rather than in the
+      // plugin config: DSH 0.2.0 removed the section API that used to persist
+      // settings, so a runtime toggle has nowhere else to be written. The
+      // config field remains the initial value.
+      setEnabled: (enabled) => { poolSettings.setEnabled(enabled) },
+      setMembers: (ids) => { poolSettings.setMembers(ids) },
+      setAutoCheckin: (enabled) => { poolSettings.setAutoCheckin(enabled) },
+      rediscover: async () => {
+        for (const runtime of runtimes) await runtime.accountPool.list(true)
+        return await poolDocument()
+      },
+      checkin: async (ids) => {
+        const rows = await runCheckin(ids)
+        return { state: 'ok', document: await poolDocument(), rows }
+      },
+    })
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,
@@ -977,6 +1128,28 @@ export function apply(ctx: Context, config: Config): void {
       }, probeKey)
     }
   })
+
+  /**
+   * Startup check-in, when the user opted in.
+   *
+   * Deferred rather than run inline: it makes network calls per member, and
+   * `apply` must return promptly. Never awaited by anything the user waits on,
+   * and it swallows its own failures — a check-in that could not run must not
+   * look like a plugin that failed to load. With the activity currently closed
+   * upstream, the normal outcome is "inactive" and nothing is claimed.
+   */
+  if (poolSettings.autoCheckin()) {
+    ctx.effect(() => {
+      const timer = setTimeout(() => {
+        void runCheckin().catch((error: unknown) => {
+          ctx.logger.warn('dsh-workbuddy-connect: startup check-in failed', error)
+        })
+      }, 5_000)
+      // Unref'd so a pending check-in never holds the process open.
+      if (typeof timer.unref === 'function') timer.unref()
+      return () => { clearTimeout(timer) }
+    }, 'dsh-workbuddy-connect: startup check-in')
+  }
 
 
   // Each settings section is what makes its namespace "served", which is how
