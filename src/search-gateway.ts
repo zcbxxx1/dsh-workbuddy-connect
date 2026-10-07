@@ -32,7 +32,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredential } from './auth.ts'
-import { hostIsLoopback, originIsLoopback } from './loopback.ts'
+import { requestIsTrusted, type TrustedAuthorities } from './loopback.ts'
 import { searchWorkBuddy } from './search.ts'
 
 /** Base path this plugin serves the Anthropic-Messages search shape on. */
@@ -100,9 +100,9 @@ function errorResponse(res: ServerResponse, status: number, message: string, typ
   json(res, status, { type: 'error', error: { type, message } })
 }
 
-/** Whether a browser-origin request is allowed (DNS-rebinding gate). */
-function browserRequestAllowed(req: IncomingMessage): boolean {
-  return hostIsLoopback(req.headers.host) && originIsLoopback(req.headers.origin)
+/** Whether a browser request is addressed to this deployment (rebinding gate). */
+function browserRequestAllowed(req: IncomingMessage, trustedHosts: TrustedAuthorities): boolean {
+  return requestIsTrusted(req.headers.host, req.headers.origin, trustedHosts)
 }
 
 /** Whether the request declares the hosted web-search tool. */
@@ -189,6 +189,14 @@ export interface SearchGatewayOptions {
   credential: () => Promise<WorkBuddyCredential | undefined>
   /** Result cap per query. */
   maxResults?: number
+  /**
+   * Non-loopback authorities this deployment serves, taken from the host's
+   * `webRuntime` when it provides one.
+   *
+   * Omitted or empty means loopback-only, so a headless profile or a test that
+   * does not opt in keeps the strict fence.
+   */
+  trustedHosts?: TrustedAuthorities
 }
 
 /**
@@ -205,7 +213,7 @@ export function workBuddySearchGatewayHandler(
       errorResponse(res, 405, 'method not allowed')
       return
     }
-    if (!browserRequestAllowed(req)) {
+    if (!browserRequestAllowed(req, deps.trustedHosts)) {
       errorResponse(res, 403, 'request-not-trusted')
       return
     }

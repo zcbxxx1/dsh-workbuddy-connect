@@ -13,7 +13,7 @@ import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import { hostIsLoopback, originIsLoopback } from './loopback.ts'
+import { requestIsTrusted, type TrustedAuthorities } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
@@ -58,6 +58,14 @@ export interface WorkBuddyStatusRouteOptions {
    * and tests keep their behaviour; the international variant passes its own.
    */
   path?: string
+  /**
+   * Non-loopback authorities this deployment serves, taken from the host's
+   * `webRuntime` when it provides one.
+   *
+   * Omitted or empty means loopback-only, so a headless profile or a test that
+   * does not opt in keeps the strict fence.
+   */
+  trustedHosts?: TrustedAuthorities
 }
 
 /** Redact token-like content before it crosses to the browser. */
@@ -75,13 +83,14 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /**
- * The request must be addressed to the loopback interface, and a
- * browser-attached Origin must be loopback too. The Host check drops
- * DNS-rebinding pages (their Host is the attacker's domain, not loopback);
- * the card's same-origin fetches carry no Origin and pass on Host alone.
+ * The request must be addressed to this deployment (loopback, or an authority
+ * the host declared trusted), and a browser-attached Origin must be same-origin
+ * with it. The Host check drops DNS-rebinding pages (their Host is the
+ * attacker's domain, which is neither); the card's same-origin fetches carry no
+ * Origin and pass on Host alone.
  */
-function loopbackRequest(req: IncomingMessage): boolean {
-  return hostIsLoopback(req.headers.host) && originIsLoopback(req.headers.origin)
+function trustedRequest(req: IncomingMessage, trustedHosts: TrustedAuthorities): boolean {
+  return requestIsTrusted(req.headers.host, req.headers.origin, trustedHosts)
 }
 
 /**
@@ -217,7 +226,7 @@ export function workBuddyStatusHandler(
       json(res, 405, { error: 'method not allowed' })
       return
     }
-    if (!loopbackRequest(req)) {
+    if (!trustedRequest(req, deps.trustedHosts)) {
       json(res, 403, { error: 'request-not-trusted' })
       return
     }

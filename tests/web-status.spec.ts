@@ -166,6 +166,29 @@ describe('web status route gate', () => {
     const response = await requestOnce({ port, method: 'POST', headers: { host: `127.0.0.1:${String(port)}` } })
     expect(response.status).toBe(405)
   })
+
+  it('serves a declared trusted authority, with and without a same-origin Origin', async () => {
+    // The regression: `dsh web --trusted-host <authority>` serves the GUI on a
+    // real hostname, and the card's own same-origin read then carries it in
+    // Host and Origin. Before the fence learned about declared authorities,
+    // every such read was answered 403 and the card showed no data.
+    const host = 'mssshield.uk:43080'
+    const port = await startStatusServer({ trustedHosts: [host] })
+    const withOrigin = await requestOnce({ port, method: 'GET', headers: { host, origin: `http://${host}` } })
+    expect(withOrigin.status).toBe(200)
+    expect(JSON.parse(withOrigin.body)).toMatchObject({ status: 'signed-in' })
+    const withoutOrigin = await requestOnce({ port, method: 'GET', headers: { host } })
+    expect(withoutOrigin.status).toBe(200)
+  })
+
+  it('still drops an undeclared authority and a cross-origin read', async () => {
+    const host = 'mssshield.uk:43080'
+    const port = await startStatusServer({ trustedHosts: [host] })
+    const undeclared = await requestOnce({ port, method: 'GET', headers: { host: 'evil.example:3080' } })
+    expect(undeclared.status).toBe(403)
+    const crossOrigin = await requestOnce({ port, method: 'GET', headers: { host, origin: 'http://evil.example' } })
+    expect(crossOrigin.status).toBe(403)
+  })
 })
 
 describe('maximum-context preference capability', () => {

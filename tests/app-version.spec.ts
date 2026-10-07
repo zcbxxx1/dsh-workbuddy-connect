@@ -135,9 +135,20 @@ describe('resolveAppVersion', () => {
 
   it('still answers when the cache cannot be written', async () => {
     // A read-only home must not take the catalog down with it.
+    //
+    // The target is a path whose parent is a regular FILE, so the write fails
+    // with ENOTDIR immediately. This avoids `/proc/...`, where
+    // `mkdirSync(dir, { recursive: true })` blocks forever under a procfs mount
+    // instead of failing — the assertion never ran and the suite hung. It also
+    // avoids permission bits, since a container running as root can still write
+    // into a mode-0500 directory, which would make this pass vacuously.
+    const root = await mkdtemp(join(tmpdir(), 'wb-appversion-blocked-'))
+    CLEANUP.push(() => rm(root, { recursive: true, force: true }))
+    const blocker = join(root, 'not-a-directory')
+    await writeFile(blocker, 'this file stands where a directory would have to be')
     await expect(resolveAppVersion({
       installed: async () => ({ version: '5.5.2', bundle: '/x' }),
-      path: '/proc/definitely-not-writable/version.json',
+      path: join(blocker, 'version.json'),
     })).resolves.toMatchObject({ version: '5.5.2', source: 'installed' })
   })
 
