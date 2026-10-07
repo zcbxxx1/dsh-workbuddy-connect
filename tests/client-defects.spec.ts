@@ -414,9 +414,11 @@ describe('WorkBuddyPluginCard', () => {
       const row = view!.root.find(node => node.props?.['role'] === 'status' && node.props?.['aria-busy'] !== undefined)
       expect(row.props['aria-busy']).toBe(true)
       // Neutral dimmed dot: neither the success green nor the error red, and not
-      // the signed-out grey that reads as "nothing is wrong".
+      // the signed-out grey that reads as "nothing is wrong". The colour comes
+      // from the theme's own idle token — the name this used to assert,
+      // `label-dimmed`, is not in DSH's token set and resolved to nothing.
       const dot = row.findAll(node => node.props?.['aria-hidden'] === 'true')[0]!
-      expect(dot.props.style.background).toBe('var(--dsw-alias-label-dimmed, #9aa0a6)')
+      expect(dot.props.style.background).toBe('var(--dsw-alias-state-idle-primary, #9aa0a6)')
 
       // Refresh stays available, under its own label: `busy` still means "an
       // action is in flight".

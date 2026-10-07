@@ -31,6 +31,7 @@ import { WorkBuddyUpdateOverlay } from './WorkBuddyUpdateNotice.tsx'
 import { WorkBuddyUpdateStore } from './update-store.ts'
 import { WORKBUDDY_CONNECT_VERSION } from '../version.ts'
 import { WorkBuddyConfigPage } from './WorkBuddyConfigPage.tsx'
+import { WorkBuddyPoolPage } from './WorkBuddyPoolPage.tsx'
 import { CARD_VARIANTS, WorkBuddyPluginCard } from './WorkBuddyPluginCard.tsx'
 import type { WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
 import { en, zh } from './locales.ts'
@@ -72,7 +73,25 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       scope: 'root'
       owner: WorkBuddyLegacySettingsCardOwnerProps
     }
+    /**
+     * Compile-time mirror of the settings shell's page seat.
+     *
+     * A list slot: one page per entry, rendered in the Settings panel beside the
+     * shipped sections. This is the seat the remote-access plugin uses, and the
+     * one that makes the pool a page of its own rather than a card the user has
+     * to find by opening Plugins and expanding the bundle.
+     */
+    'settings.section': {
+      kind: 'list'
+      scope: 'root'
+      owner: WorkBuddySettingsSectionOwnerProps
+    }
   }
+}
+
+/** Owner share of the settings page seat: the shell supplies nothing to entries. */
+interface WorkBuddySettingsSectionOwnerProps {
+  children?: never
 }
 
 /** Owner share of the 0.1.5 settings-tab seat: the tab supplies nothing to entries. */
@@ -235,6 +254,27 @@ export function apply(ctx: ClientContext): void {
         key: BUNDLE_NAME,
         locale: namespace,
       }, WorkBuddyConfigPage)) ?? NOOP_DISPOSER
+    ))
+  })
+  // The account pool's own settings page. `settings.section` is a list slot the
+  // settings shell renders one page per entry, so this appears beside the
+  // shipped sections rather than inside the Plugins page — which is what makes
+  // the pool reachable without knowing which bundle owns it.
+  guardClientContribution('account pool page', () => {
+    ctx.slots.inject('settings.section', () => (
+      guardClientContribution('account pool page', () => ctx.slots.register({
+        name: 'settings.section',
+        id: 'workbuddy-pool',
+        // After the shipped sections; the exact value only orders this against
+        // other plugins' pages, and the remote-access one uses 1.
+        order: 50,
+        label: () => t('poolSection'),
+        // REQUIRED for `t` to reach the component, exactly as the Plugins-page
+        // entry above supplies it. Without it the shell passes no translator and
+        // the page renders blank — a wrong `label` would at least be visible,
+        // but a missing locale is silent.
+        locale: namespace,
+      }, WorkBuddyPoolPage)) ?? NOOP_DISPOSER
     ))
   })
   // The reasoning-probe seat in the conversation composer. `modelDirectories`

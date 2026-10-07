@@ -83,8 +83,18 @@ const buttonStyle: CSSProperties = {
 const labelStyle: CSSProperties = {
   fontSize: 11,
   lineHeight: '16px',
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: 'var(--dsw-alias-label-secondary)',
 }
+
+/**
+ * Bubble elevation.
+ *
+ * The theme exposes no shadow token (`Theme.listTokens` has colours only), so
+ * `--dsw-shadow-lv2` — the name this used to read — resolved to nothing and the
+ * bubbles had no elevation at all. A literal is the only honest option; it is
+ * defined once here rather than repeated per bubble.
+ */
+const bubbleShadow = '0 6px 20px rgba(0, 0, 0, 0.18)'
 
 /** Tooltip bubble: the Fast Mode shape (nowrap, one line, above the control). */
 const tooltipStyle: CSSProperties = {
@@ -95,8 +105,10 @@ const tooltipStyle: CSSProperties = {
   transform: 'translateX(-50%)',
   padding: '4px 8px',
   borderRadius: 6,
-  background: 'var(--dsw-specific-tip, #1f2329)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  // `specific-tip` is not a token either; `bg-overlay` is the theme's own
+  // popover surface, which is what a tooltip is.
+  background: 'var(--dsw-alias-bg-overlay, #1f2329)',
+  boxShadow: bubbleShadow,
   color: 'var(--dsw-alias-label-primary, #fff)',
   fontSize: 12,
   lineHeight: '18px',
@@ -118,7 +130,7 @@ const confirmStyle: CSSProperties = {
   border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 8,
   background: 'var(--dsw-alias-bg-layer-1, #fff)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  boxShadow: bubbleShadow,
   color: 'var(--dsw-alias-label-primary)',
   fontSize: 12,
   lineHeight: '18px',
@@ -139,15 +151,19 @@ const confirmButtonStyle: CSSProperties = {
  *
  * The fill and its text colour must come as a pair: `brand-primary` resolves to
  * a light accent in this theme, so hardcoding `color: #fff` on top of it renders
- * white-on-white. `button-primary-fill` + `label-primary-foreground` is the
- * theme's own pair for exactly this, and is what `dsh-codex-connect` uses for
- * the same job.
+ * white-on-white.
+ *
+ * The names this used to carry — `button-primary-fill` and
+ * `label-primary-foreground` — came from `dsh-codex-connect` and are NOT in
+ * DSH's token set. An unknown custom property resolves to nothing, so the button
+ * had no fill and no text colour. `brand-primary` is the theme's own accent, and
+ * `label-primary` is what pairs with it here.
  */
 const primaryButtonStyle: CSSProperties = {
   ...confirmButtonStyle,
-  border: '1px solid var(--dsw-alias-button-primary-fill)',
-  background: 'var(--dsw-alias-button-primary-fill)',
-  color: 'var(--dsw-alias-label-primary-foreground)',
+  border: '1px solid var(--dsw-alias-brand-primary)',
+  background: 'var(--dsw-alias-brand-primary)',
+  color: 'var(--dsw-alias-label-primary)',
 }
 
 /**
@@ -168,7 +184,7 @@ const noteStyle: CSSProperties = {
   border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 8,
   background: 'var(--dsw-alias-bg-layer-1)',
-  boxShadow: 'var(--dsw-shadow-lv2)',
+  boxShadow: bubbleShadow,
   color: 'var(--dsw-alias-label-primary)',
   fontSize: 12,
   lineHeight: '18px',

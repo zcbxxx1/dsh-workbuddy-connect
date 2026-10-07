@@ -348,6 +348,34 @@ interface WorkBuddyCredits {
   unlimited?: true;
   cycleResetTime?: string;
 }
+/**
+ * Daily check-in activity state.
+ *
+ * Ported from `dsh-connect-workbuddy` (`src/upstream.ts`, MIT, Copyright (c)
+ * 2026 LaoDing) — see THIRD_PARTY_NOTICES.md.
+ *
+ * `active` is the upstream's own "the window is open" flag and is deliberately
+ * separate from `todayCheckedIn`: a closed window means claiming is impossible,
+ * which is a different report from "already claimed today".
+ */
+interface WorkBuddyCheckinStatus {
+  active: boolean;
+  todayCheckedIn: boolean;
+  streakDays: number;
+  dailyCredit: number;
+  todayCredit: number;
+  isStreakDay: boolean;
+  nextStreakDay: number;
+  streakBonusDays: number;
+  streakBonusCredit: number;
+  claimButtonText?: string;
+}
+/** The result of claiming one day's check-in reward. */
+interface WorkBuddyCheckinClaim {
+  credit: number;
+  streakDays: number;
+  isStreakDay: boolean;
+}
 /** Token refresh answer; fields the upstream omits stay absent. */
 interface WorkBuddyRefreshOutcome {
   accessToken: string;
@@ -543,6 +571,22 @@ declare class WorkBuddyUpstreamClient {
    *   unsupported", and the ceiling is never raised further to force an answer.
    */
   probeEffort(credential: WorkBuddyCredential, model: string, effort: string | undefined, signal: AbortSignal): Promise<ProbeAttempt>;
+  /**
+   * Read the daily check-in activity state.
+   *
+   * Ported from `dsh-connect-workbuddy` (`src/upstream.ts`, MIT). Read-only:
+   * this spends nothing and is safe to call on every page load.
+   */
+  fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus>;
+  /**
+   * Claim today's check-in reward.
+   *
+   * A MUTATION that really grants credit, so it is only ever called from an
+   * explicit user action or the opt-in auto-check-in path — never from a
+   * read-only refresh. Callers must check {@link fetchCheckinStatus} first: an
+   * already-claimed day is reported rather than re-claimed.
+   */
+  claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim>;
 }
 /**
  * Parse either response shape after its envelope has been checked.
@@ -1260,6 +1304,21 @@ interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
+  /**
+   * Optional account pool.
+   *
+   * Absent (or disabled) means the store's own resolution pays — the plugin's
+   * long-standing behaviour. Present and enabled, every request is routed to
+   * the highest-ranked pool member, and an upstream failure is retried on the
+   * next member.
+   *
+   * Typed structurally rather than by importing the class so the shim stays
+   * testable without constructing a real pool.
+   */
+  pool?: {
+    select: () => Promise<WorkBuddyCredential>;
+    record: (accountId: string, outcome: 'ok' | 'rate-limited' | 'out-of-credit' | 'credential-rejected' | 'policy-rejected' | 'unavailable' | 'failed', message: string, retryAtMs?: number) => void;
+  };
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
@@ -1619,6 +1678,24 @@ interface Config {
   probeConsent?: boolean;
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean;
+  /**
+   * Register the `workbuddy_search` host tool. On by default; the tool is
+   * additive and spends nothing until a conversation calls it.
+   */
+  searchTool?: boolean;
+  /** Per-query result cap for the search tool. */
+  searchMaxResults?: number;
+  /**
+   * Enable the account pool: route every request to the highest-ranked member
+   * and fail over to the next one. Off by default — with it off the live
+   * desktop sign-in pays, exactly as before.
+   */
+  accountPool?: boolean;
+  /**
+   * Attempt a daily check-in for every pool member at startup. Off by default:
+   * check-in really grants credit, so it is opt-in rather than assumed.
+   */
+  autoCheckin?: boolean;
 }
 declare const Config: z<Config>;
 /**

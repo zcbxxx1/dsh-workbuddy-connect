@@ -58,6 +58,18 @@ async function captureDoctor(args: string[]): Promise<{ code: number, json: Reco
 describe('doctor desktop auth format', () => {
   let root: string
 
+  /**
+   * Skip on Windows.
+   *
+   * The XDG case stubs `process.platform` to linux and then points
+   * `XDG_DATA_HOME` at a path built with `path.join` under the Windows temp
+   * directory — `C:\...`, not `/...`. The override rule adopts a value only
+   * when it is an absolute POSIX path, so it correctly falls back to the
+   * default and the assertion fails for a reason unrelated to doctor's
+   * reporting. A real Linux host supplies POSIX fixtures and the case applies.
+   */
+  const itLinux = it.skipIf(process.platform === 'win32')
+
   afterEach(async () => {
     if (root !== undefined) await rm(root, { recursive: true, force: true })
     root = undefined as unknown as string
@@ -116,7 +128,7 @@ describe('doctor desktop auth format', () => {
     expect((broken.json['desktopAuthFile'] as Record<string, unknown>)['format']).toBe('unrecognized')
   })
 
-  it('reports the XDG data-home file as the desktop auth path when only it exists', async () => {
+  itLinux('reports the XDG data-home file as the desktop auth path when only it exists', async () => {
     // Issue #43: the first *candidate* on Linux is the config home, but the
     // file actually lives under the data home on UOS/deepin. Doctor must name
     // the file that was really hit, for both variants.

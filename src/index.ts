@@ -37,6 +37,19 @@ import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { legacySettingsOf } from './legacy-settings.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
+import {
+  DEFAULT_SEARCH_MAX_RESULTS,
+  registerWorkBuddySearchTool,
+  WORKBUDDY_SEARCH_TOOL,
+} from './search-tool.ts'
+import { registerWorkBuddySearchGatewayRoute } from './search-gateway.ts'
+import { WorkBuddyAccountPool } from './account-pool-runtime.ts'
+import { WorkBuddyPoolStore, workbuddyPoolPath } from './pool-store.ts'
+import { createPoolKey, registerWorkBuddyPoolRoute } from './pool-route.ts'
+import { checkinAccounts, type WorkBuddyCheckinRow } from './checkin.ts'
+import { accountIdOf } from './account-discovery.ts'
+import { importCredentialText, listImportedCredentials, removeImportedCredential } from './credential-import.ts'
+import type { WorkBuddyPoolDocument, WorkBuddyWebCheckinRow, WorkBuddyWebImportedCredential, WorkBuddyWebPoolAccount } from './status-paths.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -235,6 +248,24 @@ export interface Config {
   probeConsent?: boolean
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean
+  /**
+   * Register the `workbuddy_search` host tool. On by default; the tool is
+   * additive and spends nothing until a conversation calls it.
+   */
+  searchTool?: boolean
+  /** Per-query result cap for the search tool. */
+  searchMaxResults?: number
+  /**
+   * Enable the account pool: route every request to the highest-ranked member
+   * and fail over to the next one. Off by default — with it off the live
+   * desktop sign-in pays, exactly as before.
+   */
+  accountPool?: boolean
+  /**
+   * Attempt a daily check-in for every pool member at startup. Off by default:
+   * check-in really grants credit, so it is opt-in rather than assumed.
+   */
+  autoCheckin?: boolean
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -246,12 +277,46 @@ const PROBE_CONSENT_FIELD = z.boolean().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
 const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
+/**
+ * Whether to register the `workbuddy_search` host tool.
+ *
+ * On by default: the tool is additive and costs nothing until a conversation
+ * calls it. Off is for a host whose own `web_search` should be the only search
+ * surface, and for anyone who would rather not spend WorkBuddy credit there.
+ */
+const SEARCH_TOOL_FIELD = z.boolean().default(true)
+  .description('Register the workbuddy_search tool (searches the web through the signed-in WorkBuddy account)')
+/** Per-query result cap for the search tool. */
+const SEARCH_MAX_RESULTS_FIELD = z.number().default(DEFAULT_SEARCH_MAX_RESULTS)
+  .description(`Maximum results returned per search query (default ${DEFAULT_SEARCH_MAX_RESULTS})`)
+/**
+ * Whether the account pool routes requests.
+ *
+ * Off by default. Turning it on means the plugin, not the desktop app's current
+ * sign-in, decides which account is billed — so it is opt-in, and membership is
+ * an explicit list rather than "every account on this machine".
+ */
+const ACCOUNT_POOL_FIELD = z.boolean().default(false)
+  .description('Route requests across a pool of local WorkBuddy accounts, with automatic failover')
+/**
+ * Whether to check in every pool member at startup.
+ *
+ * Off by default. Check-in is a real mutation that grants credit, so the plugin
+ * never does it unless the user asked — and the upstream currently reports the
+ * activity closed, so the normal outcome is "not active" rather than a claim.
+ */
+const AUTO_CHECKIN_FIELD = z.boolean().default(false)
+  .description('Attempt the daily WorkBuddy check-in for pool members at startup')
 
 export const Config: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   authFileAI: AUTH_FILE_AI_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
+  searchTool: SEARCH_TOOL_FIELD,
+  searchMaxResults: SEARCH_MAX_RESULTS_FIELD,
+  accountPool: ACCOUNT_POOL_FIELD,
+  autoCheckin: AUTO_CHECKIN_FIELD,
 })
 
 /**
@@ -281,6 +346,10 @@ interface VariantRuntime {
   client: WorkBuddyUpstreamClient
   catalog: WorkBuddyCatalog
   probeStore: WorkBuddyProbeStore
+  /** Persisted pool membership and per-account measurements. */
+  poolStore: WorkBuddyPoolStore
+  /** The live pool: discovers accounts, ranks them, and records outcomes. */
+  accountPool: WorkBuddyAccountPool
   probeService: WorkBuddyProbeService
   /**
    * The last catalogs that loaded, keyed by account.
@@ -420,6 +489,23 @@ function createVariantRuntime(
   const visibilityStore = new WorkBuddyVisibilityStore(
     workbuddyVisibilityPath(variant.visibilityFilename),
   )
+  // The account pool. Off unless the user opts in: with it off every request
+  // takes the store's own resolution, which is the long-standing behaviour.
+  const poolStore = new WorkBuddyPoolStore(workbuddyPoolPath(variant.id))
+  const accountPool = new WorkBuddyAccountPool({
+    variant,
+    store,
+    poolStore,
+    // Same per-product key provider the store uses, built by the shared helper,
+    // so discovery can only ever open its own product's envelopes.
+    keyProvider: atRestKeyProviderFor(variant),
+    // The stored toggle wins over the config field once the user has flipped it:
+    // DSH 0.2.0 removed the settings API that used to persist preferences, so a
+    // runtime toggle is written here instead. Absent means "never set", which
+    // falls back to the profile's own value.
+    enabled: () => poolStore.enabled() ?? current().accountPool === true,
+    explicitPath: () => configuredAuthFile(current(), variant),
+  })
   const probeService = new WorkBuddyProbeService({
     store: probeStore,
     catalog,
@@ -440,6 +526,8 @@ function createVariantRuntime(
     client,
     catalog,
     probeStore,
+    poolStore,
+    accountPool,
     probeService,
     savedCatalogs,
     visibilityStore,
@@ -529,8 +617,21 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
  * @returns whether the provider registered.
  */
 async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<boolean> {
-  const { variant, store, client, catalog, probeService } = runtime
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+  const { variant, store, client, catalog, probeService, accountPool } = runtime
+  const shim = createWorkBuddyShim({
+    store,
+    client,
+    catalog,
+    logger: ctx.logger,
+    // The pool is only consulted when the user enabled it; `select()` itself
+    // falls back to the store, so passing it always is safe.
+    pool: {
+      select: () => accountPool.select(),
+      record: (accountId, outcome, message, retryAtMs) => {
+        accountPool.record(accountId, outcome, message, retryAtMs)
+      },
+    },
+  })
   try {
     await shim.ready
   } catch (error: unknown) {
@@ -655,6 +756,183 @@ export function apply(ctx: Context, config: Config): void {
   // Same-origin routes backing each Plugin-configuration card; the webServer
   // service is optional (a headless profile serves no browser).
   const probeKey = createProbeKey()
+  /**
+   * Control key for the pool route, minted alongside the probe key.
+   *
+   * One key for the whole bundle rather than one per variant: the pool page is a
+   * single view over both products, so it authenticates once and its writes are
+   * fanned out to the runtimes it targets.
+   */
+  const poolKey = createPoolKey()
+  /**
+   * Rotation and auto check-in as the USER last set them.
+   *
+   * Held here, and persisted in the first runtime's pool file, because DSH
+   * 0.2.0 removed the settings-section API that used to carry preferences. The
+   * config field supplies the initial value; once the user flips the switch the
+   * stored value wins, so a toggle survives a restart.
+   */
+  const poolSettings = {
+    enabled: (): boolean => {
+      const stored = runtimes[0]?.poolStore.enabled()
+      return stored ?? config.accountPool === true
+    },
+    setEnabled: (enabled: boolean): void => {
+      for (const runtime of runtimes) runtime.poolStore.setEnabled(enabled)
+    },
+    setMembers: (ids: readonly string[]): void => {
+      // Membership is per account and account ids are unique across products,
+      // so every runtime's store gets the same list: whichever variant discovers
+      // that account will see it as a member.
+      for (const runtime of runtimes) runtime.poolStore.setMembers(ids)
+    },
+    autoCheckin: (): boolean => {
+      const stored = runtimes[0]?.poolStore.autoCheckin()
+      return stored ?? config.autoCheckin === true
+    },
+    setAutoCheckin: (enabled: boolean): void => {
+      for (const runtime of runtimes) runtime.poolStore.setAutoCheckin(enabled)
+    },
+  }
+  /** The most recent check-in run, for the page to render. */
+  let lastCheckin: readonly WorkBuddyWebCheckinRow[] | undefined
+
+  /**
+   * Remaining credit per account, with the failure that hid it.
+   *
+   * Cached because the page polls every 15s and the billing route is a real
+   * upstream call per account: without a TTL a page left open would issue four
+   * requests every fifteen seconds forever. Five minutes is far shorter than
+   * any credit movement that matters to this view.
+   *
+   * A failure is cached too — the route answered HTTP 500 for some accounts
+   * here, and retrying a broken endpoint on every poll would be pure noise.
+   */
+  const creditsByAccount = new Map<string, { atMs: number, credits?: number, unlimited?: boolean, error?: string }>()
+  const CREDITS_TTL_MS = 5 * 60_000
+
+  /** Read one account's credit, from cache when fresh. Never throws. */
+  const creditsFor = async (
+    runtime: VariantRuntime,
+    accountId: string,
+  ): Promise<{ credits?: number, unlimited?: boolean, error?: string }> => {
+    const cached = creditsByAccount.get(accountId)
+    const now = Date.now()
+    if (cached !== undefined && now - cached.atMs < CREDITS_TTL_MS) return cached
+
+    let entry: { atMs: number, credits?: number, unlimited?: boolean, error?: string }
+    try {
+      const credential = await runtime.accountPool.credentialFor(accountId)
+      if (credential === undefined) {
+        entry = { atMs: now, error: 'no stored credential for this account' }
+      } else {
+        const credits = await runtime.client.fetchCredits(credential)
+        entry = {
+          atMs: now,
+          credits: credits.total,
+          ...credits.unlimited === true ? { unlimited: true } : {},
+        }
+      }
+    } catch (error: unknown) {
+      // A failed read is a report, never a zero: `0` would assert the account
+      // is empty, which is the opposite of "we could not find out".
+      entry = { atMs: now, error: error instanceof Error ? error.message.slice(0, 160) : String(error) }
+    }
+    creditsByAccount.set(accountId, entry)
+    return entry
+  }
+
+  /**
+   * The imported credentials, as the page lists them.
+   *
+   * Read fresh each time rather than cached: this is a directory listing of a
+   * handful of small files, and a stale list after an import or removal would
+   * make the button that just ran look like it did nothing.
+   */
+  const importedList = async (): Promise<readonly WorkBuddyWebImportedCredential[]> => {
+    const runtime = runtimes[0]
+    if (runtime === undefined) return []
+    const entries = await listImportedCredentials(async keyIds =>
+      await atRestKeyProviderFor(runtime.variant).protectorKeyFor([...keyIds]))
+    return entries.map(entry => ({
+      accountId: entry.accountId,
+      ...entry.accountName === undefined ? {} : { accountName: entry.accountName },
+      readable: entry.readable,
+      ...entry.reason === undefined ? {} : { reason: entry.reason },
+    }))
+  }
+
+  /** Every discovered account across both products, as the page sees it. */
+  const poolDocument = async (): Promise<WorkBuddyPoolDocument> => {
+    // Membership is a bundle-level decision stored in the first runtime's file,
+    // so one read answers for every account regardless of which product found it.
+    const members = new Set(runtimes[0]?.poolStore.members() ?? [])
+    const accounts: WorkBuddyWebPoolAccount[] = []
+    for (const runtime of runtimes) {
+      const snap = await runtime.accountPool.snapshot()
+      for (const account of snap.accounts) {
+        const probe = runtime.poolStore.probeOf(account.id)
+        const credits = await creditsFor(runtime, account.id)
+        accounts.push({
+          id: account.id,
+          name: account.name,
+          live: account.live,
+          member: members.has(account.id),
+          ...account.excludedBy === undefined ? {} : { excludedBy: account.excludedBy },
+          ...account.excludedUntilMs === undefined ? {} : { excludedUntilMs: account.excludedUntilMs },
+          ...probe?.message === undefined || probe.message === '' ? {} : { excludedReason: probe.message },
+          expiresAtMs: account.expiresAtMs,
+          variant: runtime.variant.id,
+          ...credits.credits === undefined ? {} : { credits: credits.credits },
+          ...credits.unlimited === true ? { creditsUnlimited: true } : {},
+          ...credits.error === undefined ? {} : { creditsError: credits.error },
+        })
+      }
+    }
+    return {
+      enabled: poolSettings.enabled(),
+      autoCheckin: poolSettings.autoCheckin(),
+      accounts,
+      imported: await importedList(),
+      ...lastCheckin === undefined ? {} : { lastCheckin },
+      poolKey,
+    }
+  }
+
+  /**
+   * Check in the given accounts (or every member when none are named).
+   *
+   * Serial across accounts and never throws: each account's outcome is a row.
+   * A closed window reports `inactive` — the upstream's current state for every
+   * account — and no claim is attempted, so this is safe to call repeatedly.
+   */
+  const runCheckin = async (ids?: readonly string[]): Promise<readonly WorkBuddyWebCheckinRow[]> => {
+    const members = runtimes[0]?.poolStore.members() ?? []
+    const targets = ids !== undefined && ids.length > 0 ? [...ids] : members
+    const rows: WorkBuddyCheckinRow[] = []
+    for (const runtime of runtimes) {
+      const found = await runtime.accountPool.list()
+      const byId = new Map(found.map(account => [accountIdOf(account.credential), account.credential]))
+      // Only the accounts THIS variant discovered: the two products' files live
+      // in the same directory but authenticate against different hosts, so an
+      // id the other variant owns must not be sent here.
+      const scoped = targets.filter(id => byId.has(id))
+      if (scoped.length === 0) continue
+      rows.push(...await checkinAccounts(scoped, {
+        credentialFor: async id => byId.get(id),
+        client: runtime.client,
+      }))
+    }
+    lastCheckin = rows.map(row => ({
+      accountId: row.accountId,
+      accountName: row.accountName,
+      status: row.status,
+      ...row.credit === undefined ? {} : { credit: row.credit },
+      ...row.streakDays === undefined ? {} : { streakDays: row.streakDays },
+      ...row.message === undefined ? {} : { message: row.message },
+    }))
+    return lastCheckin
+  }
   let setMaximumContextWindow: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
   /**
    * Whether this host's settings service carries the 0.1.2-era section API.
@@ -744,10 +1022,114 @@ export function apply(ctx: Context, config: Config): void {
     runtime.invalidate()
   }
 
+  // Search rides the *host tool* surface, not the LLM adapter: WorkBuddy's
+  // search endpoint is a separate JSON API, so no provider route can carry it.
+  // The same resolver also feeds the Anthropic-Messages gateway route below.
+  //
+  // CN first: it is the provider order the model picker shows, and a machine
+  // with only the international app still resolves, because a variant with no
+  // credential simply reads as signed out and the loop moves on.
+  const resolveSearchCredential = async (): Promise<WorkBuddyCredential | undefined> => {
+    for (const runtime of runtimes) {
+      const credential = await runtime.store.current()
+      if (credential !== undefined) return credential
+    }
+    return undefined
+  }
+
+  // Injected optionally — a headless or older profile has no `tools` service,
+  // and search being absent must never take the model providers down with it.
+  if (config.searchTool) {
+    ctx.inject(['tools'], toolsCtx => {
+      try {
+        const disposer = registerWorkBuddySearchTool(toolsCtx, toolsCtx.tools, {
+          // Same accessor the chat path uses, so sign-out and token rotation
+          // are observed identically on both paths.
+          credential: resolveSearchCredential,
+          ...config.searchMaxResults === undefined ? {} : { maxResults: config.searchMaxResults },
+        })
+        if (disposer !== undefined) {
+          try {
+            ctx.effect(() => disposer)
+          } catch {
+            // Already disposed: release the registration directly.
+            disposer()
+          }
+        }
+      } catch (error: unknown) {
+        // Search is additive; a registration failure is reported, not fatal.
+        ctx.logger.warn(`dsh-workbuddy-connect: ${WORKBUDDY_SEARCH_TOOL} registration failed`, error)
+      }
+    })
+  }
+
   ctx.inject(['webServer'], webCtx => {
     // One update route for the whole bundle: it answers this npm package's
     // public version metadata only, so it is per-plugin, not per-variant.
     registerWorkBuddyUpdateRoute(webCtx, { currentVersion: WORKBUDDY_CONNECT_VERSION })
+    // The Anthropic-Messages search endpoint, so DSH's own `web_search` tool
+    // can be pointed at this plugin instead of a DeepSeek endpoint:
+    //   web-search-deepseek.baseURL = <dsh web origin>/plugins/dsh-workbuddy-connect/search
+    // Registered even when the host tool is off — the two are alternative
+    // routes to the same capability, and a user may want either.
+    registerWorkBuddySearchGatewayRoute(webCtx, {
+      credential: resolveSearchCredential,
+      ...config.searchMaxResults === undefined ? {} : { maxResults: config.searchMaxResults },
+    })
+    // The account pool's page and its writes. One route for both variants: the
+    // page lists every account in a single view, so a per-variant route would
+    // make it read two documents to render one list.
+    registerWorkBuddyPoolRoute(webCtx, {
+      key: poolKey,
+      snapshot: () => poolDocument(),
+      // Rotation and auto check-in live in the pool file rather than in the
+      // plugin config: DSH 0.2.0 removed the section API that used to persist
+      // settings, so a runtime toggle has nowhere else to be written. The
+      // config field remains the initial value.
+      setEnabled: (enabled) => { poolSettings.setEnabled(enabled) },
+      setMembers: (ids) => { poolSettings.setMembers(ids) },
+      setAutoCheckin: (enabled) => { poolSettings.setAutoCheckin(enabled) },
+      rediscover: async () => {
+        for (const runtime of runtimes) await runtime.accountPool.list(true)
+        return await poolDocument()
+      },
+      checkin: async (ids) => {
+        const rows = await runCheckin(ids)
+        return { state: 'ok', document: await poolDocument(), rows }
+      },
+      importCredential: async (text) => {
+        // Validate and store, then re-scan so the new account appears in the
+        // same answer: a user who imported a file should not have to press
+        // "re-detect" to see it.
+        const result = await importCredentialText(text, async keyIds => {
+          // Any variant's key provider opens the same at-rest envelopes on this
+          // machine — the two products currently seal under one secret — so the
+          // first runtime answers. A credential belonging to the other product
+          // still imports; it simply shows under that product's variant.
+          const runtime = runtimes[0]
+          if (runtime === undefined) throw new Error('no variant is available to open the credential')
+          return await atRestKeyProviderFor(runtime.variant).protectorKeyFor([...keyIds])
+        })
+        if (result.state !== 'ok') {
+          return { state: 'failed', reason: result.reason ?? 'the credential could not be imported' }
+        }
+        for (const runtime of runtimes) await runtime.accountPool.list(true)
+        return {
+          state: 'ok',
+          document: await poolDocument(),
+          imported: {
+            ...result.accountId === undefined ? {} : { accountId: result.accountId },
+            ...result.accountName === undefined ? {} : { accountName: result.accountName },
+            ...result.replaced === true ? { replaced: true } : {},
+          },
+        }
+      },
+      removeImported: async (accountId) => {
+        removeImportedCredential(accountId)
+        for (const runtime of runtimes) await runtime.accountPool.list(true)
+        return { state: 'ok', document: await poolDocument() }
+      },
+    })
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,
@@ -850,6 +1232,28 @@ export function apply(ctx: Context, config: Config): void {
       }, probeKey)
     }
   })
+
+  /**
+   * Startup check-in, when the user opted in.
+   *
+   * Deferred rather than run inline: it makes network calls per member, and
+   * `apply` must return promptly. Never awaited by anything the user waits on,
+   * and it swallows its own failures — a check-in that could not run must not
+   * look like a plugin that failed to load. With the activity currently closed
+   * upstream, the normal outcome is "inactive" and nothing is claimed.
+   */
+  if (poolSettings.autoCheckin()) {
+    ctx.effect(() => {
+      const timer = setTimeout(() => {
+        void runCheckin().catch((error: unknown) => {
+          ctx.logger.warn('dsh-workbuddy-connect: startup check-in failed', error)
+        })
+      }, 5_000)
+      // Unref'd so a pending check-in never holds the process open.
+      if (typeof timer.unref === 'function') timer.unref()
+      return () => { clearTimeout(timer) }
+    }, 'dsh-workbuddy-connect: startup check-in')
+  }
 
 
   // Each settings section is what makes its namespace "served", which is how

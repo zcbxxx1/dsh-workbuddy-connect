@@ -54,6 +54,17 @@ const SHIM = {
 } as unknown as WorkBuddyShim
 
 describe('A. disabled-list semantics (visibility store)', () => {
+  /**
+   * Skip on Windows.
+   *
+   * The case asserts POSIX permission bits (`statSync().mode & 0o077 === 0`).
+   * Windows has no such bits: `mode` reports a synthetic value that always
+   * includes the group/other digits, so the assertion cannot hold however the
+   * file is written. The store still passes `mode: 0o600` on creation; this is
+   * the platform that cannot express it.
+   */
+  const itPosix = it.skipIf(process.platform === 'win32')
+
   it('hides nothing for an account that never toggled anything', () => {
     const store = new WorkBuddyVisibilityStore(join(tempDir('wb-vis-'), 'v.json'))
     expect(store.disabled('uid-a:')).toEqual([])
@@ -118,7 +129,7 @@ describe('A. disabled-list semantics (visibility store)', () => {
     expect(new WorkBuddyVisibilityStore(path).disabled('uid-a:')).toEqual(['hy3'])
   })
 
-  it('writes the file with owner-only permissions', () => {
+  itPosix('writes the file with owner-only permissions', () => {
     const path = join(tempDir('wb-vis-'), 'v.json')
     new WorkBuddyVisibilityStore(path).setVisible('uid-a:', 'hy3', false)
     // Owner read/write only, matching the credential/catalog stores.

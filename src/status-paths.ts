@@ -34,6 +34,131 @@ export const WORKBUDDY_AI_PROBE_PATH = '/plugins/dsh-workbuddy-connect/ai/probe'
  */
 export const WORKBUDDY_UPDATE_PATH = '/plugins/dsh-workbuddy-connect/update'
 
+/**
+ * The account pool's control route, shared by both halves.
+ *
+ * One route rather than one per variant: the pool page lists both products'
+ * accounts in a single view, so a per-variant path would make the page read two
+ * documents to render one list. Each action carries the variant it targets when
+ * it needs to be specific.
+ */
+export const WORKBUDDY_POOL_PATH = '/plugins/dsh-workbuddy-connect/pool'
+
+/** One discovered account, as the pool page shows it. */
+export interface WorkBuddyWebPoolAccount {
+  /** Stable account id (`uid:enterpriseId`). */
+  id: string
+  /** Human name, or `''` when the desktop app recorded none. */
+  name: string
+  /** Whether this came from the app's live sign-in file. */
+  live: boolean
+  /** Whether the user admitted this account to the pool. */
+  member: boolean
+  /** Why it cannot serve right now; absent when it can. */
+  excludedBy?: string
+  /** The upstream's own words for the exclusion, already redacted. */
+  excludedReason?: string
+  /**
+   * When the account is usable again, epoch ms.
+   *
+   * Present when the upstream stated a reset, which is the rate-limit case.
+   * ABSENT when it did not — an account excluded without a stated time (a
+   * transport failure) has no honest countdown, and the page must say "unknown"
+   * rather than invent one.
+   */
+  excludedUntilMs?: number
+  /** Credential expiry, epoch ms. */
+  expiresAtMs: number
+  /** Which product this account belongs to (`workbuddy` / `workbuddy-ai`). */
+  variant: string
+  /**
+   * Remaining credit, when the billing route answered.
+   *
+   * ABSENT is deliberately not zero: the route fails for some accounts
+   * (observed: HTTP 500 on two of four on this machine), and a page rendering
+   * that as `0` would assert the account is empty. The reason travels in
+   * {@link creditsError} so the row can say which of the two it is.
+   */
+  credits?: number
+  /** Whether the account's cycle quota is uncapped. */
+  creditsUnlimited?: boolean
+  /** Why the credit figure is missing, when it is. */
+  creditsError?: string
+}
+
+/** One account's check-in result, as the page lists it. */
+export interface WorkBuddyWebCheckinRow {
+  accountId: string
+  accountName: string
+  status: 'claimed' | 'already' | 'inactive' | 'failed'
+  credit?: number
+  streakDays?: number
+  message?: string
+}
+
+/** The pool document the page renders. */
+export interface WorkBuddyPoolDocument {
+  /** Whether rotation is on. */
+  enabled: boolean
+  /** Whether the host checks in at startup. */
+  autoCheckin: boolean
+  accounts: readonly WorkBuddyWebPoolAccount[]
+  /**
+   * Credentials the user imported, whether or not they are pool members.
+   *
+   * Listed separately from {@link accounts} because the two answer different
+   * questions: `accounts` is what discovery can bill, this is what the user put
+   * there — and an imported file that no longer opens must still be visible so
+   * it can be removed.
+   */
+  imported: readonly WorkBuddyWebImportedCredential[]
+  /** The most recent check-in run, when one has happened this process. */
+  lastCheckin?: readonly WorkBuddyWebCheckinRow[]
+  /**
+   * In-process key authorizing the write actions. Handed to the page with the
+   * document (the page is same-origin and already passed the loopback guard);
+   * never persisted, rotates per process.
+   */
+  poolKey: string
+}
+
+/** The write actions the page may request. */
+export type WorkBuddyPoolAction =
+  | 'set-enabled'
+  | 'set-members'
+  | 'rediscover'
+  | 'checkin'
+  | 'set-auto-checkin'
+  | 'import-credential'
+  | 'remove-imported'
+
+/** One imported credential, as the page lists it. */
+export interface WorkBuddyWebImportedCredential {
+  /** The account it describes. */
+  accountId: string
+  /** Human name, when the document recorded one. */
+  accountName?: string
+  /** Whether the stored file still opens. */
+  readable: boolean
+  /** Why it does not, when it does not. */
+  reason?: string
+}
+
+/** An action's answer: a fresh document, or a reason it could not be done. */
+export interface WorkBuddyPoolActionAnswer {
+  state: 'ok' | 'failed'
+  document?: WorkBuddyPoolDocument
+  reason?: string
+  /** Check-in rows, present only for the `checkin` action. */
+  rows?: readonly WorkBuddyWebCheckinRow[]
+  /** The result of an import, present only for `import-credential`. */
+  imported?: {
+    accountId?: string
+    accountName?: string
+    replaced?: boolean
+  }
+}
+
 /** One model's recorded probe observation, as the card displays it. */
 export interface WorkBuddyWebProbeModel {
   id: string
