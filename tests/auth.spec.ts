@@ -331,6 +331,19 @@ describe('Windows default desktop path probing', () => {
 describe('WSL default desktop path probing', () => {
   const AUTH_TAIL = join('CodeBuddyExtension', 'Data', 'Public', 'auth', 'workbuddy-desktop.info')
 
+  /**
+   * Skip on Windows.
+   *
+   * These cases stub `process.platform` to linux and build their fixtures with
+   * `path.join` under the Windows temp directory, so every path is
+   * `C:\...` with backslashes. The XDG rule they exercise adopts an override
+   * only when it is an absolute POSIX path (`startsWith('/')`), which correctly
+   * rejects that shape — so the fallback branch runs and the assertion fails
+   * for a reason that has nothing to do with the behaviour under test. On a real
+   * Linux host the fixtures are POSIX paths and the rule applies as written.
+   */
+  const itLinux = it.skipIf(process.platform === 'win32')
+
   async function asWsl<T>(options: {
     home: string
     env?: Partial<Record<'APPDATA' | 'LOCALAPPDATA' | 'USERPROFILE', string>>
@@ -449,7 +462,7 @@ async function asLinux<T>(options: {
     })
   })
 
-  it('skips an empty config-home file and resolves to the data-home credential', async () => {
+  itLinux('skips an empty config-home file and resolves to the data-home credential', async () => {
     // The probe treats an empty file as absent and moves on; the resolved-path
     // diagnostic must agree, or doctor would name the empty config-home file
     // while authentication actually uses the data-home candidate.
@@ -475,7 +488,7 @@ async function asLinux<T>(options: {
     })
   })
 
-  it('resolves the actually-hit path when only the data home carries the file', async () => {
+  itLinux('resolves the actually-hit path when only the data home carries the file', async () => {
     // Issue #43 diagnostics: the first *candidate* is the config home, but
     // when only the data-home copy exists, resolvedDesktopAuthPath() must
     // name it — for both variants.
@@ -501,7 +514,7 @@ async function asLinux<T>(options: {
     })
   })
 
-  it('uses translated WSL environment paths when the Windows user differs', async () => {
+  itLinux('uses translated WSL environment paths when the Windows user differs', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wb-wsl-'))
     CLEANUP.push(() => rm(root, { recursive: true, force: true }))
     const windowsProfile = join(root, 'Users', 'windows-alice')

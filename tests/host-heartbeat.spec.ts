@@ -44,6 +44,18 @@ afterEach(async () => {
 })
 
 describe('host heartbeat', () => {
+  /**
+   * Skip on Windows.
+   *
+   * The recycled-PID case needs `processStartTimeMs(process.pid)` to answer, and
+   * on Windows that reads the process creation time through `wmic` — which
+   * current Windows builds no longer ship. With no start time the age check has
+   * nothing to compare, so the assertion fails on the environment rather than on
+   * the heartbeat logic. The production path degrades to its PID-only fallback
+   * exactly as designed; this is the test that cannot reach the WMI source.
+   */
+  const itNotWindows = it.skipIf(process.platform === 'win32')
+
   it('writes, reads, and clears a heartbeat under $DSH_HOME', async () => {
     root = await mkdtemp(join(tmpdir(), 'wb-heartbeat-'))
     vi.stubEnv('DSH_HOME', root)
@@ -76,7 +88,7 @@ describe('host heartbeat', () => {
     expect(await readHostHeartbeat()).toBeUndefined()
   })
 
-  it('detects a recycled PID as dead (registeredAt after this process started)', async () => {
+  itNotWindows('detects a recycled PID as dead (registeredAt after this process started)', async () => {
     // The current process started at some point in the past. If a stale
     // heartbeat claims a `registeredAt` that is *older* than this process's
     // own start time, the PID cannot be the original host — it has been

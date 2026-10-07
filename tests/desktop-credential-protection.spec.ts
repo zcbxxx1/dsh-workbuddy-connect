@@ -259,6 +259,18 @@ describe('at-rest payload validation', () => {
 })
 
 describe('at-rest key provider', () => {
+  /**
+   * Skip on Windows.
+   *
+   * The case asserts that a provider configured with the macOS discovery mode
+   * has no default helper path off darwin (`toBeUndefined()`). On this machine
+   * WorkBuddy is installed at a Windows default location, so `helperPath()`
+   * resolves a real path instead — the assertion encodes a darwin/linux
+   * expectation about what the platform default is, not a behaviour that is
+   * wrong here.
+   */
+  const itNotWindows = it.skipIf(process.platform === 'win32')
+
   it('caches one source resolution per key id', async () => {
     let calls = 0
     const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => { calls += 1; return PAYLOAD_TEXT } })
@@ -323,7 +335,7 @@ describe('at-rest key provider', () => {
     await expect(provider.protectorKeyFor([KEY_ID])).rejects.toThrow(/not available at \/nonexistent\/workbuddy-electron/)
   })
 
-  it('resolves the helper path from env, then the platform default', () => {
+  itNotWindows('resolves the helper path from env, then the platform default', () => {
     vi.stubEnv(WORKBUDDY_ELECTRON_BIN_ENV, '/opt/wb-electron')
     expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT) }).helperPath()).toBe('/opt/wb-electron')
     // Blank env falls through to the platform default, but only for a provider

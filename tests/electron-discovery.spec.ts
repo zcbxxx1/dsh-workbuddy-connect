@@ -25,7 +25,17 @@ import { CN_VARIANT, AI_VARIANT , electronProfileFor} from '../src/variants.ts'
  * authoritative, discovery runs only after the default path fails, identity is
  * proved before execution, and an unfinished check is never mistaken for an
  * absent app.
+ *
+ * macOS-ONLY. The fixtures are `.app` bundles (`Contents/MacOS/Electron`) made
+ * executable with `mode: 0o755`, and the production defaults they exercise are
+ * the darwin ones. On Windows neither holds — the binary lands at a path the
+ * darwin default never probes, and an executable bit is not a thing — so the
+ * provider correctly reports `electron-binary-unavailable` and every assertion
+ * here fails for a reason that says nothing about the code. Skipped rather than
+ * rewritten: porting these to Windows would mean asserting a different product's
+ * layout, which is not what this file is about.
  */
+const describeMacOS = describe.skipIf(process.platform !== 'darwin')
 
 const CN_BUNDLE_ID = electronProfileFor(CN_VARIANT).macOS.bundleId
 const AI_BUNDLE_ID = electronProfileFor(AI_VARIANT).macOS.bundleId
@@ -127,7 +137,7 @@ describe('#48 explicit configuration is authoritative', () => {
   })
 })
 
-describe('#48 discovery runs only after the default path fails', () => {
+describeMacOS('#48 discovery runs only after the default path fails', () => {
   it('does not call the discovery tools when the default path works', async () => {
     const tools = fakeTools()
     const defaultPath = await executableAt('default-Electron')
@@ -171,7 +181,7 @@ describe('#48 discovery runs only after the default path fails', () => {
   })
 })
 
-describe('#48 identity is proved before execution', () => {
+describeMacOS('#48 identity is proved before execution', () => {
   it('rejects a candidate whose bundle id is another product', async () => {
     const app = await fakeApp('NotWorkBuddy.app')
     const provider = new WorkBuddyAtRestKeyProvider({
@@ -205,7 +215,7 @@ describe('#48 identity is proved before execution', () => {
   })
 })
 
-describe('#48 candidate counting', () => {
+describeMacOS('#48 candidate counting', () => {
   it('uses the only candidate found', async () => {
     const app = await fakeApp('WorkBuddy.app')
     const provider = new WorkBuddyAtRestKeyProvider({
@@ -260,7 +270,7 @@ describe('#48 candidate counting', () => {
   })
 })
 
-describe('#48 an unfinished check is not an absent app', () => {
+describeMacOS('#48 an unfinished check is not an absent app', () => {
   it('reports incomplete when the search tool cannot run', async () => {
     const provider = new WorkBuddyAtRestKeyProvider({
       product: electronProfileFor(CN_VARIANT),
@@ -449,7 +459,7 @@ describe('#48 discoverability is a per-variant setting', () => {
   })
 })
 
-describe('#48 a failed discovery is retried, a successful one is cached', () => {
+describeMacOS('#48 a failed discovery is retried, a successful one is cached', () => {
   it('re-runs discovery on the next attempt after a failure', async () => {
     let found = false
     const app = await fakeApp('WorkBuddy.app')
@@ -499,7 +509,7 @@ describe('#48 a failed discovery is retried, a successful one is cached', () => 
   })
 })
 
-describe('#48 discovery failures reach the status document as reasonCode', () => {
+describeMacOS('#48 discovery failures reach the status document as reasonCode', () => {
   it('carries electron-binary-not-found through store.status()', async () => {
     const store = new WorkBuddyCredentialStore({
       variant: CN_VARIANT,
@@ -546,7 +556,7 @@ describe('#48 discovery failures reach the status document as reasonCode', () =>
   })
 })
 
-describe('#59/#60 the international app on macOS', () => {
+describeMacOS('#59/#60 the international app on macOS', () => {
   function aiTools(overrides: Partial<WorkBuddyDiscoveryTools> = {}): WorkBuddyDiscoveryTools {
     return fakeTools({
       bundleIdentifier: async () => AI_BUNDLE_ID,
