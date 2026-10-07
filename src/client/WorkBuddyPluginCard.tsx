@@ -187,7 +187,10 @@ const cardStyle: CSSProperties = {
   overflow: 'hidden',
   border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 10,
-  background: 'var(--dsw-alias-bg-module-platform)',
+  // `bg-layer-1` is the theme's primary raised surface. The name this used to
+  // carry, `bg-module-platform`, is not in the token set at all — an unknown
+  // custom property resolves to nothing, so the card had no background.
+  background: 'var(--dsw-alias-bg-layer-1)',
   // The card is an <li> under BOTH seats: DSH 0.1.5's Plugins tab nests cards
   // in its own <ul>, and the 0.1.6+ configuration page provides a <ul> too.
   // Neither owner draws list markers for its cards, and this keeps the new
@@ -211,7 +214,7 @@ const headerStyle: CSSProperties = {
 }
 const headTextStyle: CSSProperties = { display: 'flex', minWidth: 0, flexDirection: 'column', gap: 3 }
 const nameStyle: CSSProperties = { fontSize: 14, lineHeight: '20px', fontWeight: 600 }
-const descriptionStyle: CSSProperties = { fontSize: 13, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
+const descriptionStyle: CSSProperties = { fontSize: 13, lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' }
 const chevronStyle: CSSProperties = { flex: '0 0 auto', fontSize: 18, lineHeight: 1, transition: 'transform 120ms ease' }
 const cardBodyStyle: CSSProperties = { borderTop: '1px solid var(--dsw-alias-border-l2)', padding: '16px 14px 18px' }
 
@@ -226,7 +229,7 @@ const quotaTitleStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '2
 const quotaLabelStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' }
 const modelBadgeStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }
 const modelOfferStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
-const modelRateStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
+const modelRateStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' }
 const contextPreferenceStyle: CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 9, padding: '10px 12px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, color: 'var(--dsw-alias-label-primary)', fontSize: 13, lineHeight: '20px' }
 const contextPreferenceCopyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
 /**
@@ -246,7 +249,11 @@ const assistFeedbackStyle: CSSProperties = { margin: 0, fontSize: 12, lineHeight
 const contextRowMainStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }
 const modelBadgeChipStyle: CSSProperties = {
   padding: '1px 8px', borderRadius: 999, fontSize: 11, lineHeight: '18px',
-  background: 'var(--dsw-alias-state-success-subtle, rgba(34, 160, 107, 0.12))',
+  // `state-success-subtle` is not in the token set, so the background always
+  // came from this fallback. Kept as a fallback on a real surface token instead:
+  // the raised layer follows the theme, and the alpha tint below is only a
+  // last resort if even that is missing.
+  background: 'var(--dsw-alias-bg-layer-2, rgba(34, 160, 107, 0.12))',
   color: 'var(--dsw-alias-state-success-primary, #22a06b)',
 }
 
@@ -303,7 +310,7 @@ const tabStyle: CSSProperties = {
   border: 0,
   borderBottom: '2px solid transparent',
   background: 'transparent',
-  color: 'var(--dsw-alias-label-tertiary)',
+  color: 'var(--dsw-alias-label-secondary)',
   font: 'inherit',
   fontSize: 13,
   lineHeight: '20px',
@@ -323,9 +330,15 @@ const tabPanelStyle: CSSProperties = { display: 'flex', flexDirection: 'column',
  */
 const primaryButtonStyle: CSSProperties = {
   ...buttonStyle,
-  border: '1px solid var(--dsw-alias-button-primary-fill)',
-  background: 'var(--dsw-alias-button-primary-fill)',
-  color: 'var(--dsw-alias-label-primary-foreground)',
+  // `brand-primary` is the theme's own accent and the only fill token that
+  // exists; `button-primary-fill` and `label-primary-foreground` are not in the
+  // set, so both the fill and its text were resolving to nothing. The text
+  // keeps `label-primary`, which is what the paired comment below intends: the
+  // accent is light, so it is paired with a readable label colour rather than a
+  // hardcoded white.
+  border: '1px solid var(--dsw-alias-brand-primary)',
+  background: 'var(--dsw-alias-brand-primary)',
+  color: 'var(--dsw-alias-label-primary)',
 }
 
 function progressFillStyle(percent: number): CSSProperties {
@@ -344,11 +357,14 @@ function progressFillStyle(percent: number): CSSProperties {
  * is signed in" when the truth is "not read yet".
  */
 function dotStyle(status: 'loading' | WorkBuddyWebStatus['status']): CSSProperties {
+  // `state-idle-primary` is the theme's own "inactive" colour. This used to read
+  // `label-dimmed`, which is not in the token set: it looked correct only
+  // because of the hardcoded grey fallback, which does not follow a dark theme.
   const color = status === 'signed-in'
     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
     : status === 'error'
       ? 'var(--dsw-alias-state-error-primary, #d92d20)'
-      : 'var(--dsw-alias-label-dimmed, #9aa0a6)'
+      : 'var(--dsw-alias-state-idle-primary, #9aa0a6)'
   return { width: 9, height: 9, borderRadius: '50%', flex: '0 0 auto', background: color }
 }
 

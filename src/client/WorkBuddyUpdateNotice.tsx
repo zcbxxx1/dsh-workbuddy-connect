@@ -27,7 +27,10 @@ const panelStyle: CSSProperties = {
   padding: '13px 15px',
   border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 12,
-  background: 'var(--dsw-alias-bg-module-platform)',
+  // `bg-layer-1` is the theme's primary raised surface; the name this used to
+  // read (`bg-module-platform`) is not in the token set, so the panel had no
+  // background and the overlay sat directly on whatever was behind it.
+  background: 'var(--dsw-alias-bg-layer-1)',
   color: 'var(--dsw-alias-label-primary)',
 }
 const overlayStyle: CSSProperties = {
@@ -52,7 +55,10 @@ const bodyStyle: CSSProperties = { margin: 0, color: 'var(--dsw-alias-label-seco
 const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6 }
 const releaseRowStyle: CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 8, padding: '7px 9px', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.04))', border: 0, width: '100%', boxSizing: 'border-box', color: 'inherit', font: 'inherit', fontSize: 13, lineHeight: '19px', textAlign: 'left', cursor: 'pointer', overflowWrap: 'anywhere' }
 const buttonStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box', minHeight: 32, padding: '4px 11px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', font: 'inherit', fontSize: 12, lineHeight: '20px', whiteSpace: 'nowrap', cursor: 'pointer' }
-const primaryButtonStyle: CSSProperties = { ...buttonStyle, borderColor: 'var(--dsw-alias-button-primary-fill)', background: 'var(--dsw-alias-button-primary-fill)', color: 'var(--dsw-alias-label-primary-foreground)' }
+// `button-primary-fill` and `label-primary-foreground` are not in DSH's token
+// set, so this button had neither fill nor text colour; `brand-primary` is the
+// theme's own accent and `label-primary` is what pairs with it.
+const primaryButtonStyle: CSSProperties = { ...buttonStyle, borderColor: 'var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: 'var(--dsw-alias-label-primary)' }
 const textButtonStyle: CSSProperties = { border: 0, padding: 0, background: 'transparent', color: 'var(--dsw-alias-brand-primary)', font: 'inherit', fontSize: 12, lineHeight: '20px', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 2 }
 const promptRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px 7px 10px', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.06))' }
 const promptTextStyle: CSSProperties = { flex: '1 1 auto', minWidth: 0, margin: 0, padding: 0, background: 'transparent', color: 'var(--dsw-alias-label-primary)', fontSize: 12, lineHeight: '19px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }
