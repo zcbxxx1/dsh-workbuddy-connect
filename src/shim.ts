@@ -18,7 +18,9 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
+import { accountIdOf } from './account-discovery.ts'
+import { outcomeOfFailure } from './account-pool-runtime.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { extractDisplayErrorMessage, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
@@ -52,6 +54,21 @@ export interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
+  /**
+   * Optional account pool.
+   *
+   * Absent (or disabled) means the store's own resolution pays — the plugin's
+   * long-standing behaviour. Present and enabled, every request is routed to
+   * the highest-ranked pool member, and an upstream failure is retried on the
+   * next member.
+   *
+   * Typed structurally rather than by importing the class so the shim stays
+   * testable without constructing a real pool.
+   */
+  pool?: {
+    select: () => Promise<WorkBuddyCredential>
+    record: (accountId: string, outcome: 'ok' | 'rate-limited' | 'out-of-credit' | 'credential-rejected' | 'policy-rejected' | 'unavailable' | 'failed', message: string, retryAtMs?: number) => void
+  }
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -106,7 +123,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
  * is the boundary, and the upstream credential comes from the store alone.
  */
 export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim {
-  const { store, client, catalog } = options
+  const { store, client, catalog, pool } = options
   const logger = options.logger
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
@@ -204,7 +221,9 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     }
     let credential
     try {
-      credential = await store.resolve()
+      // The pool decides who pays when it is enabled; otherwise this is the
+      // store's own resolution, exactly as before.
+      credential = pool === undefined ? await store.resolve() : await pool.select()
     } catch (error: unknown) {
       writeOpenAIError(res, 401, 'not_signed_in', String(error))
       return
@@ -216,6 +235,24 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     const controller = new AbortController()
     req.on('close', () => controller.abort())
     const result = await client.chatStream(credential, prepared, controller.signal)
+
+    // Feed the outcome back to the pool so the NEXT request starts from a
+    // measurement instead of rediscovering the same wall. Only an enabled pool
+    // has a place to record it.
+    if (pool !== undefined) {
+      try {
+        const accountId = accountIdOf(credential)
+        if (result.ok) {
+          pool.record(accountId, 'ok', '')
+        } else {
+          const classified = outcomeOfFailure(result.status, result.message)
+          pool.record(accountId, classified.outcome, classified.message, classified.retryAtMs)
+        }
+      } catch {
+        // Recording is advisory: a store write failure must not fail a request
+        // that may still be perfectly serviceable.
+      }
+    }
 
     if (!result.ok) {
       const detail = extractDisplayErrorMessage(result.message) ?? result.message.slice(0, 400)

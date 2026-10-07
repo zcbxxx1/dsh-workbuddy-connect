@@ -1260,6 +1260,21 @@ interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
+  /**
+   * Optional account pool.
+   *
+   * Absent (or disabled) means the store's own resolution pays — the plugin's
+   * long-standing behaviour. Present and enabled, every request is routed to
+   * the highest-ranked pool member, and an upstream failure is retried on the
+   * next member.
+   *
+   * Typed structurally rather than by importing the class so the shim stays
+   * testable without constructing a real pool.
+   */
+  pool?: {
+    select: () => Promise<WorkBuddyCredential>;
+    record: (accountId: string, outcome: 'ok' | 'rate-limited' | 'out-of-credit' | 'credential-rejected' | 'policy-rejected' | 'unavailable' | 'failed', message: string, retryAtMs?: number) => void;
+  };
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
@@ -1626,6 +1641,12 @@ interface Config {
   searchTool?: boolean;
   /** Per-query result cap for the search tool. */
   searchMaxResults?: number;
+  /**
+   * Enable the account pool: route every request to the highest-ranked member
+   * and fail over to the next one. Off by default — with it off the live
+   * desktop sign-in pays, exactly as before.
+   */
+  accountPool?: boolean;
 }
 declare const Config: z<Config>;
 /**

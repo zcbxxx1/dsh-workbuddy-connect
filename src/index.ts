@@ -43,6 +43,8 @@ import {
   WORKBUDDY_SEARCH_TOOL,
 } from './search-tool.ts'
 import { registerWorkBuddySearchGatewayRoute } from './search-gateway.ts'
+import { WorkBuddyAccountPool } from './account-pool-runtime.ts'
+import { WorkBuddyPoolStore, workbuddyPoolPath } from './pool-store.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -248,6 +250,12 @@ export interface Config {
   searchTool?: boolean
   /** Per-query result cap for the search tool. */
   searchMaxResults?: number
+  /**
+   * Enable the account pool: route every request to the highest-ranked member
+   * and fail over to the next one. Off by default — with it off the live
+   * desktop sign-in pays, exactly as before.
+   */
+  accountPool?: boolean
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -271,6 +279,15 @@ const SEARCH_TOOL_FIELD = z.boolean().default(true)
 /** Per-query result cap for the search tool. */
 const SEARCH_MAX_RESULTS_FIELD = z.number().default(DEFAULT_SEARCH_MAX_RESULTS)
   .description(`Maximum results returned per search query (default ${DEFAULT_SEARCH_MAX_RESULTS})`)
+/**
+ * Whether the account pool routes requests.
+ *
+ * Off by default. Turning it on means the plugin, not the desktop app's current
+ * sign-in, decides which account is billed — so it is opt-in, and membership is
+ * an explicit list rather than "every account on this machine".
+ */
+const ACCOUNT_POOL_FIELD = z.boolean().default(false)
+  .description('Route requests across a pool of local WorkBuddy accounts, with automatic failover')
 
 export const Config: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
@@ -279,6 +296,7 @@ export const Config: z<Config> = z.object({
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
   searchTool: SEARCH_TOOL_FIELD,
   searchMaxResults: SEARCH_MAX_RESULTS_FIELD,
+  accountPool: ACCOUNT_POOL_FIELD,
 })
 
 /**
@@ -308,6 +326,10 @@ interface VariantRuntime {
   client: WorkBuddyUpstreamClient
   catalog: WorkBuddyCatalog
   probeStore: WorkBuddyProbeStore
+  /** Persisted pool membership and per-account measurements. */
+  poolStore: WorkBuddyPoolStore
+  /** The live pool: discovers accounts, ranks them, and records outcomes. */
+  accountPool: WorkBuddyAccountPool
   probeService: WorkBuddyProbeService
   /**
    * The last catalogs that loaded, keyed by account.
@@ -447,6 +469,19 @@ function createVariantRuntime(
   const visibilityStore = new WorkBuddyVisibilityStore(
     workbuddyVisibilityPath(variant.visibilityFilename),
   )
+  // The account pool. Off unless the user opts in: with it off every request
+  // takes the store's own resolution, which is the long-standing behaviour.
+  const poolStore = new WorkBuddyPoolStore(workbuddyPoolPath(variant.id))
+  const accountPool = new WorkBuddyAccountPool({
+    variant,
+    store,
+    poolStore,
+    // Same per-product key provider the store uses, built by the shared helper,
+    // so discovery can only ever open its own product's envelopes.
+    keyProvider: atRestKeyProviderFor(variant),
+    enabled: () => current().accountPool === true,
+    explicitPath: () => configuredAuthFile(current(), variant),
+  })
   const probeService = new WorkBuddyProbeService({
     store: probeStore,
     catalog,
@@ -467,6 +502,8 @@ function createVariantRuntime(
     client,
     catalog,
     probeStore,
+    poolStore,
+    accountPool,
     probeService,
     savedCatalogs,
     visibilityStore,
@@ -556,8 +593,21 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
  * @returns whether the provider registered.
  */
 async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<boolean> {
-  const { variant, store, client, catalog, probeService } = runtime
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+  const { variant, store, client, catalog, probeService, accountPool } = runtime
+  const shim = createWorkBuddyShim({
+    store,
+    client,
+    catalog,
+    logger: ctx.logger,
+    // The pool is only consulted when the user enabled it; `select()` itself
+    // falls back to the store, so passing it always is safe.
+    pool: {
+      select: () => accountPool.select(),
+      record: (accountId, outcome, message, retryAtMs) => {
+        accountPool.record(accountId, outcome, message, retryAtMs)
+      },
+    },
+  })
   try {
     await shim.ready
   } catch (error: unknown) {
