@@ -10,13 +10,18 @@
  * mirror of the membership list: the host owns it, and a control that changed
  * something the host did not confirm would be a lie the next read exposes.
  *
+ * Styling follows the plugin card's language: `--dsw-alias-*` theme tokens
+ * rather than invented variable names. An unknown custom property resolves to
+ * nothing, so a made-up name is not a fallback — it is a missing colour that
+ * silently renders as the browser default.
+ *
  * @module dsh-workbuddy-connect/client/WorkBuddyPoolPage
  */
 
 import type { CSSProperties, ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { WorkBuddyPoolDocument, WorkBuddyWebPoolAccount } from '../status-paths.ts'
+import type { WorkBuddyPoolDocument, WorkBuddyWebImportedCredential, WorkBuddyWebPoolAccount } from '../status-paths.ts'
 import { WORKBUDDY_POOL_PATH } from '../status-paths.ts'
 
 /** Props the settings shell delivers to a `settings.section` entry. */
@@ -24,17 +29,168 @@ export type WorkBuddyPoolPageProps =
   PropsRuntime<'settings.section'>
   & PropsLocale<'settings.workbuddy'>
 
-const sectionStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 760 }
-const cardStyle: CSSProperties = { border: '1px solid var(--dsh-border, #3a3a3a)', borderRadius: 8, padding: 12 }
-const rowStyle: CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', flexWrap: 'wrap',
+// --- design tokens ---------------------------------------------------------
+// Only names the live theme actually defines (`Theme.listTokens`). An unknown
+// custom property does not fall back — it resolves to nothing, so the colour
+// silently disappears. The card's own `bg-module-platform`, `label-tertiary`,
+// `button-primary-fill` and `state-success-subtle` are NOT in that list, which
+// is why this page does not borrow them.
+
+const sectionStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 14,
+  maxWidth: 820,
+  color: 'var(--dsw-alias-label-primary)',
 }
-const mutedStyle: CSSProperties = { opacity: 0.65, fontSize: 12 }
-const dangerStyle: CSSProperties = { color: 'var(--dsh-danger, #e06c75)' }
-const buttonStyle: CSSProperties = { padding: '4px 10px', cursor: 'pointer' }
+const cardStyle: CSSProperties = {
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 10,
+  background: 'var(--dsw-alias-bg-layer-1)',
+  overflow: 'hidden',
+}
+const cardHeadStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 16,
+  flexWrap: 'wrap',
+  padding: '12px 14px',
+}
+const cardBodyStyle: CSSProperties = {
+  borderTop: '1px solid var(--dsw-alias-border-l2)',
+  padding: '14px',
+}
+const cardTitleStyle: CSSProperties = {
+  margin: 0,
+  fontSize: 14,
+  lineHeight: '20px',
+  fontWeight: 600,
+  color: 'var(--dsw-alias-label-primary)',
+}
+const hintStyle: CSSProperties = {
+  margin: 0,
+  fontSize: 12,
+  lineHeight: '19px',
+  color: 'var(--dsw-alias-label-secondary)',
+}
+const dangerTextStyle: CSSProperties = { color: 'var(--dsw-alias-state-error-primary)' }
+
+/** A pill button, matching the card's own controls. */
+const buttonStyle: CSSProperties = {
+  boxSizing: 'border-box',
+  minHeight: 30,
+  padding: '4px 12px',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 15,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  color: 'var(--dsw-alias-label-primary)',
+  font: 'inherit',
+  fontSize: 13,
+  lineHeight: '18px',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+/** The brand accent, used for the one primary action on the page. */
+const primaryButtonStyle: CSSProperties = {
+  ...buttonStyle,
+  border: '1px solid var(--dsw-alias-brand-primary)',
+  background: 'var(--dsw-alias-brand-primary)',
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+/** One account row: a grid so every column lines up across rows. */
+const accountRowStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'auto minmax(140px, 1fr) auto',
+  alignItems: 'center',
+  gap: '4px 12px',
+  padding: '9px 10px',
+  borderRadius: 8,
+}
+const accountNameStyle: CSSProperties = { fontSize: 14, lineHeight: '20px', fontWeight: 500 }
+const accountMetaStyle: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 8,
+  gridColumn: '2 / -1',
+  fontSize: 12,
+  lineHeight: '18px',
+  color: 'var(--dsw-alias-label-secondary)',
+}
+/** A small status chip. */
+const chipStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '1px 8px',
+  borderRadius: 9,
+  border: '1px solid var(--dsw-alias-border-l2)',
+  background: 'var(--dsw-alias-bg-layer-2)',
+  fontSize: 11,
+  lineHeight: '17px',
+  color: 'var(--dsw-alias-label-secondary)',
+  whiteSpace: 'nowrap',
+}
+const chipLiveStyle: CSSProperties = {
+  ...chipStyle,
+  color: 'var(--dsw-alias-state-success-primary)',
+}
+const chipWarnStyle: CSSProperties = {
+  ...chipStyle,
+  color: 'var(--dsw-alias-state-error-primary)',
+}
+const chipIdleStyle: CSSProperties = {
+  ...chipStyle,
+  color: 'var(--dsw-alias-state-idle-primary)',
+}
+/** A labelled switch row. */
+const switchRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 10,
+  padding: '7px 0',
+  cursor: 'pointer',
+}
+const switchCopyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
+const switchLabelStyle: CSSProperties = { fontSize: 14, lineHeight: '20px' }
+const emptyStyle: CSSProperties = {
+  margin: 0,
+  padding: '14px 10px',
+  fontSize: 13,
+  lineHeight: '20px',
+  color: 'var(--dsw-alias-label-secondary)',
+  textAlign: 'center',
+}
+const inputStyle: CSSProperties = {
+  boxSizing: 'border-box',
+  width: '100%',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 8,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  color: 'var(--dsw-alias-label-primary)',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: 12,
+  lineHeight: '19px',
+  padding: 9,
+  resize: 'vertical',
+}
 
 /** How often the page re-reads the document. */
 const POLL_MS = 15_000
+
+/**
+ * A small status chip.
+ *
+ * `style` accepts `undefined` explicitly because callers pass a conditional
+ * override (`row.status === 'failed' ? warn : undefined`) and the repo compiles
+ * with `exactOptionalPropertyTypes`, which rejects that against a plain
+ * optional property.
+ */
+function Chip({ children, style }: { children: ReactNode, style?: CSSProperties | undefined }): ReactNode {
+  return <span style={{ ...chipStyle, ...style }}>{children}</span>
+}
 
 /** One account row. */
 function AccountRow({ account, t, disabled, onToggle }: {
@@ -46,8 +202,9 @@ function AccountRow({ account, t, disabled, onToggle }: {
   const expiry = account.expiresAtMs > 0
     ? new Date(account.expiresAtMs).toLocaleDateString()
     : t('poolNoExpiry')
+  const excluded = account.excludedBy !== undefined
   return (
-    <div style={rowStyle}>
+    <div style={accountRowStyle}>
       <input
         type="checkbox"
         checked={account.member}
@@ -55,42 +212,34 @@ function AccountRow({ account, t, disabled, onToggle }: {
         aria-label={account.name === '' ? account.id : account.name}
         onChange={event => { onToggle(account.id, event.target.checked) }}
       />
-      <span style={{ minWidth: 180 }}>{account.name === '' ? t('poolUnnamed') : account.name}</span>
-      <span style={mutedStyle}>{account.id.slice(0, 20)}</span>
-      {account.live ? <span style={mutedStyle}>· {t('poolLive')}</span> : null}
-      <span style={mutedStyle}>· {t('poolVariant')}: {account.variant}</span>
-      <span style={mutedStyle}>· {t('poolExpires')}: {expiry}</span>
-      {/*
-        Credits: `unlimited` first, then a number, then "unknown" — never a
-        zero. The billing route fails for some accounts (HTTP 500 on two of
-        four here), and rendering that as 0 would assert an empty account.
-        The reason rides the tooltip so the row stays one line.
-      */}
-      {account.creditsUnlimited === true
-        ? <span style={mutedStyle}>· {t('poolCredits')}: {t('poolCreditsUnlimited')}</span>
-        : account.credits === undefined
+      <span style={accountNameStyle}>{account.name === '' ? t('poolUnnamed') : account.name}</span>
+      <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        {account.live ? <Chip style={chipLiveStyle}>{t('poolLive')}</Chip> : null}
+        {excluded
           ? (
-              <span style={mutedStyle} title={account.creditsError ?? ''}>
-                · {t('poolCredits')}: {t('poolCreditsUnknown')}
-              </span>
+              <Chip style={chipWarnStyle}>
+                {t('poolExcluded')}
+                {account.excludedUntilMs === undefined
+                  ? ` · ${t('poolRecoversUnknown')}`
+                  : ` · ${t('poolRecoversAt')} ${new Date(account.excludedUntilMs).toLocaleString()}`}
+              </Chip>
             )
-          : <span style={mutedStyle}>· {t('poolCredits')}: {account.credits}</span>}
-      {account.excludedBy === undefined
-        ? null
-        : (
-            <span style={dangerStyle} title={account.excludedReason ?? ''}>
-              · {t('poolExcluded')}: {account.excludedBy}
-              {/*
-                The stated recovery instant, so "when does this come back" is
-                answerable from the page. Absent when upstream named no time
-                (a transport failure): saying "unknown" is honest, and a
-                countdown invented from the local fallback would not be.
-              */}
-              {account.excludedUntilMs === undefined
-                ? ` · ${t('poolRecoversUnknown')}`
-                : ` · ${t('poolRecoversAt')} ${new Date(account.excludedUntilMs).toLocaleString()}`}
-            </span>
-          )}
+          : null}
+      </span>
+      <span style={accountMetaStyle}>
+        <span title={account.id}>{account.id.slice(0, 24)}</span>
+        <span>· {t('poolVariant')}: {account.variant}</span>
+        <span>· {t('poolExpires')}: {expiry}</span>
+        <span title={account.creditsError ?? ''}>
+          · {t('poolCredits')}:{' '}
+          {account.creditsUnlimited === true
+            ? t('poolCreditsUnlimited')
+            : account.credits ?? t('poolCreditsUnknown')}
+        </span>
+        {excluded && account.excludedReason !== undefined
+          ? <span style={dangerTextStyle} title={account.excludedReason}>· {account.excludedReason.slice(0, 80)}</span>
+          : null}
+      </span>
     </div>
   )
 }
@@ -118,13 +267,13 @@ function ImportPasteBox({ t, disabled, onImport }: {
         spellCheck={false}
         aria-label={t('poolImportPaste')}
         placeholder={t('poolImportPastePlaceholder')}
-        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%' }}
+        style={inputStyle}
         onChange={event => { setText(event.target.value) }}
       />
       <span>
         <button
           type="button"
-          style={buttonStyle}
+          style={text.trim() === '' ? buttonStyle : primaryButtonStyle}
           disabled={disabled || text.trim() === ''}
           onClick={() => {
             // Clear only on success: a rejected credential must stay on screen
@@ -134,6 +283,47 @@ function ImportPasteBox({ t, disabled, onImport }: {
         >
           {t('poolImportRun')}
         </button>
+      </span>
+    </div>
+  )
+}
+
+/**
+ * One imported credential.
+ *
+ * An entry that no longer opens stays visible with a Remove button: hiding it
+ * would leave an undeletable file on disk that the user can see no reason for.
+ */
+function ImportedRow({ entry, t, disabled, onRemove }: {
+  entry: WorkBuddyWebImportedCredential
+  t: WorkBuddyPoolPageProps['t']
+  disabled: boolean
+  onRemove: (accountId: string) => void
+}): ReactNode {
+  const label = entry.accountName
+    ?? (entry.accountId === '' ? t('poolImportUnreadable') : entry.accountId)
+  return (
+    <div style={accountRowStyle}>
+      <span style={{ width: 1 }} />
+      <span style={accountNameStyle}>{label}</span>
+      <span style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
+        {entry.readable
+          ? <Chip style={chipLiveStyle}>{t('poolImportReadable')}</Chip>
+          : <Chip style={chipWarnStyle}>{t('poolImportBroken')}</Chip>}
+        <button
+          type="button"
+          style={buttonStyle}
+          disabled={disabled || entry.accountId === ''}
+          title={entry.reason ?? ''}
+          onClick={() => { onRemove(entry.accountId) }}
+        >
+          {t('poolImportRemove')}
+        </button>
+      </span>
+      <span style={accountMetaStyle}>
+        {entry.accountId === ''
+          ? <span style={dangerTextStyle}>{entry.reason ?? t('poolImportBroken')}</span>
+          : <span title={entry.accountId}>{entry.accountId.slice(0, 32)}</span>}
       </span>
     </div>
   )
@@ -241,58 +431,73 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
     <div style={sectionStyle}>
       {readFailure === undefined
         ? null
-        : <p style={dangerStyle}>{t('poolReadFailed')}: {readFailure}</p>}
+        : <p style={{ ...hintStyle, ...dangerTextStyle }}>{t('poolReadFailed')}: {readFailure}</p>}
 
       <section style={cardStyle}>
-        <h3 style={{ marginTop: 0 }}>{t('poolTitle')}</h3>
-        <p style={mutedStyle}>{t('poolIntro')}</p>
-        <label style={rowStyle}>
-          <input
-            type="checkbox"
-            checked={document.enabled}
-            disabled={busy}
-            onChange={event => { void act('set-enabled', { enabled: event.target.checked }) }}
-          />
-          <span>{t('poolEnabled')}</span>
-        </label>
-        <label style={rowStyle}>
-          <input
-            type="checkbox"
-            checked={document.autoCheckin}
-            disabled={busy}
-            onChange={event => { void act('set-auto-checkin', { enabled: event.target.checked }) }}
-          />
-          <span>{t('poolAutoCheckin')}</span>
-        </label>
-        <p style={mutedStyle}>{t('poolAutoCheckinHint')}</p>
+        <div style={cardHeadStyle}>
+          <h3 style={cardTitleStyle}>{t('poolTitle')}</h3>
+          <Chip style={document.enabled ? chipLiveStyle : undefined}>
+            {document.enabled ? t('poolStateOn') : t('poolStateOff')}
+          </Chip>
+        </div>
+        <div style={cardBodyStyle}>
+          <p style={hintStyle}>{t('poolIntro')}</p>
+          <div style={{ display: 'flex', flexDirection: 'column', marginTop: 8 }}>
+            <label style={switchRowStyle}>
+              <input
+                type="checkbox"
+                checked={document.enabled}
+                disabled={busy}
+                onChange={event => { void act('set-enabled', { enabled: event.target.checked }) }}
+              />
+              <span style={switchCopyStyle}>
+                <span style={switchLabelStyle}>{t('poolEnabled')}</span>
+              </span>
+            </label>
+            <label style={switchRowStyle}>
+              <input
+                type="checkbox"
+                checked={document.autoCheckin}
+                disabled={busy}
+                onChange={event => { void act('set-auto-checkin', { enabled: event.target.checked }) }}
+              />
+              <span style={switchCopyStyle}>
+                <span style={switchLabelStyle}>{t('poolAutoCheckin')}</span>
+                <span style={hintStyle}>{t('poolAutoCheckinHint')}</span>
+              </span>
+            </label>
+          </div>
+        </div>
       </section>
 
       <section style={cardStyle}>
-        <div style={{ ...rowStyle, justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0 }}>{t('poolAccounts')}</h3>
-          <span>
-            <button
-              type="button"
-              style={buttonStyle}
-              disabled={busy}
-              onClick={() => { void act('rediscover') }}
-            >
-              {t('poolRediscover')}
-            </button>
-          </span>
+        <div style={cardHeadStyle}>
+          <h3 style={cardTitleStyle}>{t('poolAccounts')}</h3>
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={busy}
+            onClick={() => { void act('rediscover') }}
+          >
+            {busy ? t('poolWorking') : t('poolRediscover')}
+          </button>
         </div>
-        <p style={mutedStyle}>{t('poolMembersHint')}</p>
-        {accounts.length === 0
-          ? <p style={mutedStyle}>{t('poolNoAccounts')}</p>
-          : accounts.map(account => (
-              <AccountRow
-                key={`${account.variant}:${account.id}`}
-                account={account}
-                t={t}
-                disabled={busy}
-                onToggle={toggleMember}
-              />
-            ))}
+        <div style={cardBodyStyle}>
+          <p style={hintStyle}>{t('poolMembersHint')}</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 8 }}>
+            {accounts.length === 0
+              ? <p style={emptyStyle}>{t('poolNoAccounts')}</p>
+              : accounts.map(account => (
+                  <AccountRow
+                    key={`${account.variant}:${account.id}`}
+                    account={account}
+                    t={t}
+                    disabled={busy}
+                    onToggle={toggleMember}
+                  />
+                ))}
+          </div>
+        </div>
       </section>
 
       {/*
@@ -302,50 +507,49 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
         host action, which validates before storing.
       */}
       <section style={cardStyle}>
-        <h3 style={{ marginTop: 0 }}>{t('poolImport')}</h3>
-        <p style={mutedStyle}>{t('poolImportHint')}</p>
-        <div style={rowStyle}>
-          <input
-            type="file"
-            accept=".info,application/json"
-            disabled={busy}
-            aria-label={t('poolImportFile')}
-            onChange={event => {
-              const file = event.target.files?.[0]
-              // Reset so choosing the SAME file twice still fires a change
-              // event — otherwise a failed import could not be retried.
-              event.target.value = ''
-              if (file === undefined) return
-              void file.text().then(text => act('import-credential', { text }))
-            }}
-          />
+        <div style={cardHeadStyle}>
+          <h3 style={cardTitleStyle}>{t('poolImport')}</h3>
         </div>
-        <ImportPasteBox t={t} disabled={busy} onImport={text => act('import-credential', { text })} />
-        {imported.length === 0
-          ? null
-          : imported.map(entry => (
-              <div key={entry.accountId === '' ? `${entry.accountName ?? 'unknown'}-${entry.reason ?? ''}` : entry.accountId} style={rowStyle}>
-                <span style={{ minWidth: 180 }}>
-                  {entry.accountName ?? (entry.accountId === '' ? t('poolImportUnreadable') : entry.accountId)}
-                </span>
-                {entry.readable
-                  ? null
-                  : <span style={dangerStyle} title={entry.reason ?? ''}>· {t('poolImportBroken')}</span>}
-                <button
-                  type="button"
-                  style={buttonStyle}
-                  disabled={busy || entry.accountId === ''}
-                  onClick={() => { void act('remove-imported', { accountId: entry.accountId }) }}
-                >
-                  {t('poolImportRemove')}
-                </button>
-              </div>
-            ))}
+        <div style={cardBodyStyle}>
+          <p style={hintStyle}>{t('poolImportHint')}</p>
+          <div style={{ marginTop: 10 }}>
+            <input
+              type="file"
+              accept=".info,application/json"
+              disabled={busy}
+              aria-label={t('poolImportFile')}
+              onChange={event => {
+                const file = event.target.files?.[0]
+                // Reset so choosing the SAME file twice still fires a change
+                // event — otherwise a failed import could not be retried.
+                event.target.value = ''
+                if (file === undefined) return
+                void file.text().then(text => act('import-credential', { text }))
+              }}
+            />
+          </div>
+          <ImportPasteBox t={t} disabled={busy} onImport={text => act('import-credential', { text })} />
+          {imported.length === 0
+            ? null
+            : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 12 }}>
+                  {imported.map(entry => (
+                    <ImportedRow
+                      key={entry.accountId === '' ? `${entry.accountName ?? 'unknown'}-${entry.reason ?? ''}` : entry.accountId}
+                      entry={entry}
+                      t={t}
+                      disabled={busy}
+                      onRemove={id => { void act('remove-imported', { accountId: id }) }}
+                    />
+                  ))}
+                </div>
+              )}
+        </div>
       </section>
 
       <section style={cardStyle}>
-        <div style={{ ...rowStyle, justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0 }}>{t('poolCheckin')}</h3>
+        <div style={cardHeadStyle}>
+          <h3 style={cardTitleStyle}>{t('poolCheckin')}</h3>
           <button
             type="button"
             style={buttonStyle}
@@ -355,19 +559,24 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
             {t('poolCheckinRun')}
           </button>
         </div>
-        <p style={mutedStyle}>{t('poolCheckinHint')}</p>
-        {(document.lastCheckin ?? []).length === 0
-          ? null
-          : (document.lastCheckin ?? []).map(row => (
-              <div key={row.accountId} style={rowStyle}>
-                <span style={{ minWidth: 180 }}>{row.accountName === '' ? row.accountId : row.accountName}</span>
-                <span style={row.status === 'failed' ? dangerStyle : mutedStyle}>
-                  {t(`poolCheckin_${row.status}` as 'poolCheckin_claimed')}
-                </span>
-                {row.credit === undefined ? null : <span style={mutedStyle}>· +{row.credit}</span>}
-                {row.message === undefined ? null : <span style={mutedStyle}>· {row.message}</span>}
-              </div>
-            ))}
+        <div style={cardBodyStyle}>
+          <p style={hintStyle}>{t('poolCheckinHint')}</p>
+          {(document.lastCheckin ?? []).length === 0
+            ? <p style={emptyStyle}>{t('poolCheckinNever')}</p>
+            : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 8 }}>
+                  {(document.lastCheckin ?? []).map(row => (
+                    <div key={row.accountId} style={accountRowStyle}>
+                      <span style={accountNameStyle}>{row.accountName === '' ? row.accountId : row.accountName}</span>
+                      <Chip style={row.status === 'failed' ? chipWarnStyle : undefined}>
+                        {t(`poolCheckin_${row.status}` as 'poolCheckin_claimed')}
+                      </Chip>
+                      {row.credit === undefined ? null : <Chip>+{row.credit}</Chip>}
+                    </div>
+                  ))}
+                </div>
+              )}
+        </div>
       </section>
     </div>
   )

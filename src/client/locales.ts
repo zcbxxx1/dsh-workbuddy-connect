@@ -163,6 +163,11 @@ export const en = {
   poolImportRemove: 'Remove',
   poolImportUnreadable: 'unreadable import',
   poolImportBroken: 'stored file no longer opens',
+  poolImportReadable: 'ready',
+  poolStateOn: 'on',
+  poolStateOff: 'off',
+  poolWorking: 'Working…',
+  poolCheckinNever: 'No check-in has run yet.',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -325,4 +330,9 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   poolImportRemove: '移除',
   poolImportUnreadable: '无法读取的导入项',
   poolImportBroken: '已存文件无法打开',
+  poolImportReadable: '可用',
+  poolStateOn: '已开启',
+  poolStateOff: '已关闭',
+  poolWorking: '处理中…',
+  poolCheckinNever: '尚未执行过签到。',
 }
