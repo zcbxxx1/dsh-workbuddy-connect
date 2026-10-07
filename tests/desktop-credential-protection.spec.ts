@@ -104,6 +104,50 @@ describe('desktop auth classification', () => {
     }
   })
 
+  it('also collects a sealed identity field, which lives under account', () => {
+    // WorkBuddy 5.6 seals `account.nickname` too. Leaving it wrapped is why a
+    // signed-in card showed no user name.
+    const document = JSON.stringify({
+      auth: {
+        accessToken: sealAuthFieldForTest(KEY, 'token'),
+        refreshToken: sealAuthFieldForTest(KEY, 'refresh'),
+      },
+      account: { uid: 'uid-9', nickname: sealAuthFieldForTest(KEY, 'Tester') },
+    })
+    const classified = classifyDesktopAuthDocument(document)
+    expect(classified.format).toBe('encrypted')
+    if (classified.format !== 'encrypted') return
+    expect(classified.wrapped.fields.map(field => `${field.section}.${field.field}`).sort())
+      .toEqual(['account.nickname', 'auth.accessToken', 'auth.refreshToken'])
+  })
+
+  it('keeps the credential readable when only the nickname is sealed', () => {
+    const document = JSON.stringify({
+      auth: { accessToken: 'plain-token', refreshToken: 'plain-refresh' },
+      account: { uid: 'uid-9', nickname: sealAuthFieldForTest(KEY, 'Tester') },
+    })
+    const classified = classifyDesktopAuthDocument(document)
+    expect(classified.format).toBe('encrypted')
+    if (classified.format !== 'encrypted') return
+    expect(classified.wrapped.fields.map(field => field.field)).toEqual(['nickname'])
+  })
+
+  it('does not fail the document when the nickname envelope cannot be decoded', () => {
+    // Identity is for display: an unreadable name must cost the name only,
+    // never the sign-in.
+    const document = JSON.stringify({
+      auth: {
+        accessToken: sealAuthFieldForTest(KEY, 'token'),
+        refreshToken: sealAuthFieldForTest(KEY, 'refresh'),
+      },
+      account: { uid: 'uid-9', nickname: { '$wbEncrypted': 1, envelope: '%%%bad%%%' } },
+    })
+    const classified = classifyDesktopAuthDocument(document)
+    expect(classified.format).toBe('encrypted')
+    if (classified.format !== 'encrypted') return
+    expect(classified.wrapped.fields.map(field => field.field).sort()).toEqual(['accessToken', 'refreshToken'])
+  })
+
   it('treats a wrapper whose envelope will not decode as unrecognized, not encrypted', () => {
     const broken = JSON.stringify({
       auth: { accessToken: { '$wbEncrypted': 1, envelope: '%%%not-base64%%%' } },
@@ -178,6 +222,25 @@ describe('field decryption', () => {
     expect(parsed.auth['expiresAt']).toBe(1900000000)
     expect(parsed.auth['domain']).toBe('www.workbuddy.ai')
     expect((parsed.auth['accessToken'] as { $wbEncrypted?: number }).$wbEncrypted).toBeUndefined()
+  })
+
+  it('writes a decrypted nickname back under account, not auth', () => {
+    // The two sections are what `parseWorkBuddyAuth` reads for tokens and for
+    // identity respectively; writing the name into `auth` would lose it again.
+    const document = JSON.stringify({
+      auth: {
+        accessToken: sealAuthFieldForTest(KEY, 'token'),
+        refreshToken: sealAuthFieldForTest(KEY, 'refresh'),
+      },
+      account: { uid: 'uid-9', nickname: sealAuthFieldForTest(KEY, 'Tester') },
+    })
+    const classified = classifyDesktopAuthDocument(document)
+    if (classified.format !== 'encrypted') throw new Error('fixture misclassified')
+    const text = unwrapDesktopAuthDocument(classified, field => `opened-${field.field}`)
+    const parsed = JSON.parse(text) as { auth: Record<string, unknown>, account: Record<string, unknown> }
+    expect(parsed.account['nickname']).toBe('opened-nickname')
+    expect(parsed.auth['nickname']).toBeUndefined()
+    expect(parsed.auth['accessToken']).toBe('opened-accessToken')
   })
 })
 

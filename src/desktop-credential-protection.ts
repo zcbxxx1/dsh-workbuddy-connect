@@ -73,7 +73,13 @@ export interface WorkBuddyEnvelope {
 
 /** One auth field found in its encrypted wrapper, with its envelope decoded. */
 export interface WrappedAuthField {
-  field: 'accessToken' | 'refreshToken'
+  field: 'accessToken' | 'refreshToken' | 'nickname'
+  /**
+   * Which object the field lives in: `auth` holds the tokens, `account` holds
+   * the identity fields. Recorded so the rebuild writes each decrypted value
+   * back where it came from.
+   */
+  section: 'auth' | 'account'
   envelope: WorkBuddyEnvelope
 }
 
@@ -101,7 +107,11 @@ export function keyIdsOf(fields: readonly WrappedAuthField[]): string[] {
  * envelope cannot be decoded makes the whole document unrecognized rather
  * than encrypted, because no key could ever open it.
  */
-function parseWrappedField(field: 'accessToken' | 'refreshToken', value: unknown): WrappedAuthField | undefined {
+function parseWrappedField(
+  field: WrappedAuthField['field'],
+  section: WrappedAuthField['section'],
+  value: unknown,
+): WrappedAuthField | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const wrapped = value as Record<string, unknown>
   if (wrapped['$wbEncrypted'] !== 1 || typeof wrapped['envelope'] !== 'string') return undefined
@@ -126,6 +136,7 @@ function parseWrappedField(field: 'accessToken' | 'refreshToken', value: unknown
   if (typeof parts['keyId'] !== 'string' || !/^[0-9a-f]{16}$/u.test(parts['keyId'])) return undefined
   return {
     field,
+    section,
     envelope: {
       suite: parts['suite'],
       keyId: parts['keyId'],
@@ -154,6 +165,20 @@ function parseBase64(value: unknown, length?: number): Buffer | undefined {
 const AUTH_FIELDS = ['accessToken', 'refreshToken'] as const
 
 /**
+ * Identity fields that WorkBuddy 5.6 also seals.
+ *
+ * These live under `account`, not `auth`, and are read only for display (the
+ * card's nickname) and for the account key. Leaving them wrapped is why a
+ * signed-in card used to show no user name: `account.nickname` arrives as an
+ * envelope, and the plaintext reader treats a non-string as absent.
+ *
+ * Kept separate from {@link AUTH_FIELDS} because they are located in a
+ * different object, and a missing one is not a credential problem — the
+ * document stays readable when only the tokens are wrapped.
+ */
+const IDENTITY_FIELDS = ['nickname'] as const
+
+/**
  * Read a desktop auth document's format. `absent` is an empty file; `plaintext`
  * is any document the regular parser could read (even one without a token);
  * `encrypted` has at least one field in a decodable wrapper; everything else —
@@ -170,17 +195,33 @@ export function classifyDesktopAuthDocument(text: string): DesktopAuthClassifica
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { format: 'unrecognized' }
   const document = parsed as Record<string, unknown>
+  // Mirror `parseWorkBuddyAuth`'s shape handling: the 5.6 document nests tokens
+  // under `auth` and identity under `account`; a legacy flat document is both.
   const auth = typeof document['auth'] === 'object' && document['auth'] !== null
     ? document['auth'] as Record<string, unknown>
     : document
+  const account = typeof document['account'] === 'object' && document['account'] !== null
+    ? document['account'] as Record<string, unknown>
+    : document
+
   const fields: WrappedAuthField[] = []
   for (const field of AUTH_FIELDS) {
     const value = auth[field]
     if (typeof value === 'string') continue
-    const wrapped = parseWrappedField(field, value)
-    // A field in *some* object that is not a decodable wrapper: not plaintext,
-    // not usable. Treated as unrecognized below unless another field wrapped.
+    const wrapped = parseWrappedField(field, 'auth', value)
+    // A token field in *some* object that is not a decodable wrapper: not
+    // plaintext, not usable. Treated as unrecognized below unless another
+    // field wrapped.
     if (wrapped === undefined && value !== undefined) return { format: 'unrecognized' }
+    if (wrapped !== undefined) fields.push(wrapped)
+  }
+  for (const field of IDENTITY_FIELDS) {
+    const value = account[field]
+    if (typeof value === 'string') continue
+    const wrapped = parseWrappedField(field, 'account', value)
+    // Deliberately lenient, unlike the token fields above: identity is for
+    // display, so an envelope this build cannot decode must leave the card
+    // without a name — never make the credential itself unreadable.
     if (wrapped !== undefined) fields.push(wrapped)
   }
   if (fields.length === 0) return { format: 'plaintext' }
@@ -201,8 +242,16 @@ export function unwrapDesktopAuthDocument(
   const auth = typeof rebuilt['auth'] === 'object' && rebuilt['auth'] !== null
     ? rebuilt['auth'] as Record<string, unknown>
     : rebuilt
+  // A flat legacy document has no `account`; identity fields then live beside
+  // the tokens, and the `auth` view already is the whole document.
+  const account = typeof rebuilt['account'] === 'object' && rebuilt['account'] !== null
+    ? rebuilt['account'] as Record<string, unknown>
+    : rebuilt
   for (const field of wrapped.fields) {
-    auth[field.field] = openField(field)
+    // Written back to the section it came from, so the plaintext parser finds
+    // a token under `auth` and a name under `account`.
+    const target = field.section === 'account' ? account : auth
+    target[field.field] = openField(field)
   }
   return JSON.stringify(rebuilt)
 }
