@@ -103,6 +103,15 @@ export interface WorkBuddyPoolDocument {
   /** Whether the host checks in at startup. */
   autoCheckin: boolean
   accounts: readonly WorkBuddyWebPoolAccount[]
+  /**
+   * Credentials the user imported, whether or not they are pool members.
+   *
+   * Listed separately from {@link accounts} because the two answer different
+   * questions: `accounts` is what discovery can bill, this is what the user put
+   * there — and an imported file that no longer opens must still be visible so
+   * it can be removed.
+   */
+  imported: readonly WorkBuddyWebImportedCredential[]
   /** The most recent check-in run, when one has happened this process. */
   lastCheckin?: readonly WorkBuddyWebCheckinRow[]
   /**
@@ -120,6 +129,20 @@ export type WorkBuddyPoolAction =
   | 'rediscover'
   | 'checkin'
   | 'set-auto-checkin'
+  | 'import-credential'
+  | 'remove-imported'
+
+/** One imported credential, as the page lists it. */
+export interface WorkBuddyWebImportedCredential {
+  /** The account it describes. */
+  accountId: string
+  /** Human name, when the document recorded one. */
+  accountName?: string
+  /** Whether the stored file still opens. */
+  readable: boolean
+  /** Why it does not, when it does not. */
+  reason?: string
+}
 
 /** An action's answer: a fresh document, or a reason it could not be done. */
 export interface WorkBuddyPoolActionAnswer {
@@ -128,6 +151,12 @@ export interface WorkBuddyPoolActionAnswer {
   reason?: string
   /** Check-in rows, present only for the `checkin` action. */
   rows?: readonly WorkBuddyWebCheckinRow[]
+  /** The result of an import, present only for `import-credential`. */
+  imported?: {
+    accountId?: string
+    accountName?: string
+    replaced?: boolean
+  }
 }
 
 /** One model's recorded probe observation, as the card displays it. */

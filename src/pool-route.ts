@@ -81,6 +81,16 @@ export interface WorkBuddyPoolRouteOptions {
   checkin: (accountIds?: readonly string[]) => Promise<WorkBuddyPoolActionAnswer>
   /** Turn startup auto check-in on or off. */
   setAutoCheckin?: (enabled: boolean) => Promise<void> | void
+  /**
+   * Store one credential the user supplied, and report what it describes.
+   *
+   * The text is validated by the callee before it is written, so a file that
+   * cannot produce a credential is refused with a reason instead of being
+   * stored and then skipped by every later scan.
+   */
+  importCredential?: (text: string) => Promise<WorkBuddyPoolActionAnswer>
+  /** Remove one previously imported credential. */
+  removeImported?: (accountId: string) => Promise<WorkBuddyPoolActionAnswer>
   /** The in-process key the status document handed the card. */
   key: string
   /** Route path to mount. Defaults to the shared path. */
@@ -191,6 +201,26 @@ async function dispatch(
         ? body['accountIds'].filter((value): value is string => typeof value === 'string' && value !== '')
         : undefined
       return await options.checkin(ids)
+    }
+    case 'import-credential': {
+      if (options.importCredential === undefined) {
+        return { state: 'failed', reason: 'importing is not available on this host' }
+      }
+      const text = body['text']
+      if (typeof text !== 'string' || text.trim() === '') {
+        return { state: 'failed', reason: 'no credential text was supplied' }
+      }
+      return await options.importCredential(text)
+    }
+    case 'remove-imported': {
+      if (options.removeImported === undefined) {
+        return { state: 'failed', reason: 'importing is not available on this host' }
+      }
+      const accountId = body['accountId']
+      if (typeof accountId !== 'string' || accountId === '') {
+        return { state: 'failed', reason: 'no account id was supplied' }
+      }
+      return await options.removeImported(accountId)
     }
     default:
       return { state: 'failed', reason: `unknown action: ${action}` }

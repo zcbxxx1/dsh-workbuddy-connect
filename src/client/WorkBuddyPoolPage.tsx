@@ -96,6 +96,50 @@ function AccountRow({ account, t, disabled, onToggle }: {
 }
 
 /**
+ * A textarea for pasting a credential, with an explicit import button.
+ *
+ * Kept local state: the text is a draft, not pool state, and clearing it after
+ * a successful import is the one thing a user expects. The parent owns whether
+ * the import succeeded, so it hands down `disabled` and the callback.
+ */
+function ImportPasteBox({ t, disabled, onImport }: {
+  t: WorkBuddyPoolPageProps['t']
+  disabled: boolean
+  /** Resolves true when the credential was accepted. */
+  onImport: (text: string) => Promise<boolean>
+}): ReactNode {
+  const [text, setText] = useState('')
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+      <textarea
+        value={text}
+        disabled={disabled}
+        rows={4}
+        spellCheck={false}
+        aria-label={t('poolImportPaste')}
+        placeholder={t('poolImportPastePlaceholder')}
+        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%' }}
+        onChange={event => { setText(event.target.value) }}
+      />
+      <span>
+        <button
+          type="button"
+          style={buttonStyle}
+          disabled={disabled || text.trim() === ''}
+          onClick={() => {
+            // Clear only on success: a rejected credential must stay on screen
+            // so the user can see what was refused and fix it.
+            void onImport(text).then(ok => { if (ok) setText('') })
+          }}
+        >
+          {t('poolImportRun')}
+        </button>
+      </span>
+    </div>
+  )
+}
+
+/**
  * The pool page.
  *
  * A read failure keeps the last document on screen and shows the reason beside
@@ -141,10 +185,14 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
    * The action's own answer supersedes the poll (it bumped `seq`), so the
    * toggle the user just flipped is not briefly reverted by a read that started
    * before it.
+   *
+   * Returns whether the action SUCCEEDED. The paste box needs that to decide
+   * whether to clear its draft: clearing on a refused import would erase the
+   * very text the user has to correct.
    */
-  const act = useCallback(async (action: string, extra: Record<string, unknown> = {}) => {
+  const act = useCallback(async (action: string, extra: Record<string, unknown> = {}): Promise<boolean> => {
     const key = document?.poolKey
-    if (key === undefined) return
+    if (key === undefined) return false
     const mine = ++seq.current
     setBusy(true)
     try {
@@ -154,13 +202,16 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
         body: JSON.stringify({ action, ...extra }),
       })
       const answer = await response.json() as { state?: string, document?: WorkBuddyPoolDocument, reason?: string }
-      if (!mounted.current || mine !== seq.current) return
+      const ok = response.ok && answer.state !== 'failed'
+      if (!mounted.current || mine !== seq.current) return ok
       if (answer.document !== undefined) setDocument(answer.document)
-      setReadFailure(answer.state === 'failed' ? (answer.reason ?? 'action failed') : undefined)
+      setReadFailure(ok ? undefined : (answer.reason ?? `action failed (HTTP ${response.status})`))
+      return ok
     } catch (error: unknown) {
       if (mounted.current && mine === seq.current) {
         setReadFailure(error instanceof Error ? error.message : String(error))
       }
+      return false
     } finally {
       if (mounted.current) setBusy(false)
     }
@@ -182,6 +233,9 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
   }
 
   const accounts = document.accounts
+  // Tolerated as absent: a host built before the import feature serves no
+  // `imported` field, and the section simply renders empty rather than crashing.
+  const imported = document.imported ?? []
 
   return (
     <div style={sectionStyle}>
@@ -238,6 +292,54 @@ export function WorkBuddyPoolPage({ t }: WorkBuddyPoolPageProps): ReactNode {
                 disabled={busy}
                 onToggle={toggleMember}
               />
+            ))}
+      </section>
+
+      {/*
+        Import. A file input plus a paste box, because the two ways a user has a
+        credential differ: a `.info` copied from another machine is a file, while
+        a value lifted out of a running app is text. Both go through the same
+        host action, which validates before storing.
+      */}
+      <section style={cardStyle}>
+        <h3 style={{ marginTop: 0 }}>{t('poolImport')}</h3>
+        <p style={mutedStyle}>{t('poolImportHint')}</p>
+        <div style={rowStyle}>
+          <input
+            type="file"
+            accept=".info,application/json"
+            disabled={busy}
+            aria-label={t('poolImportFile')}
+            onChange={event => {
+              const file = event.target.files?.[0]
+              // Reset so choosing the SAME file twice still fires a change
+              // event — otherwise a failed import could not be retried.
+              event.target.value = ''
+              if (file === undefined) return
+              void file.text().then(text => act('import-credential', { text }))
+            }}
+          />
+        </div>
+        <ImportPasteBox t={t} disabled={busy} onImport={text => act('import-credential', { text })} />
+        {imported.length === 0
+          ? null
+          : imported.map(entry => (
+              <div key={entry.accountId === '' ? `${entry.accountName ?? 'unknown'}-${entry.reason ?? ''}` : entry.accountId} style={rowStyle}>
+                <span style={{ minWidth: 180 }}>
+                  {entry.accountName ?? (entry.accountId === '' ? t('poolImportUnreadable') : entry.accountId)}
+                </span>
+                {entry.readable
+                  ? null
+                  : <span style={dangerStyle} title={entry.reason ?? ''}>· {t('poolImportBroken')}</span>}
+                <button
+                  type="button"
+                  style={buttonStyle}
+                  disabled={busy || entry.accountId === ''}
+                  onClick={() => { void act('remove-imported', { accountId: entry.accountId }) }}
+                >
+                  {t('poolImportRemove')}
+                </button>
+              </div>
             ))}
       </section>
 

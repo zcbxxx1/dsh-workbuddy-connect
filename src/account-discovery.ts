@@ -36,6 +36,8 @@ import {
 } from './desktop-credential-protection.ts'
 import type { WorkBuddyVariant } from './variants.ts'
 import { desktopAuthCandidatesFor } from './auth.ts'
+import { parseCredentialText } from './credential-parse.ts'
+import { workbuddyImportedDir } from './credential-paths.ts'
 
 /** One discovered account, with the file it was read from. */
 export interface DiscoveredAccount {
@@ -106,55 +108,11 @@ export async function readAuthFile(
 /**
  * Parse a plaintext auth document.
  *
- * Kept local rather than imported from `auth.ts`'s `parseWorkBuddyAuth` so the
- * scan has no dependency on the store's own resolution order — the store
- * answers "which account is current", this answers "which accounts exist".
+ * Delegates to the shared reader so discovery and the import feature cannot
+ * disagree about what a file says.
  */
 function parseCredential(text: string, filePath: string): WorkBuddyCredential | undefined {
-  let document: unknown
-  try {
-    document = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof document !== 'object' || document === null || Array.isArray(document)) return undefined
-  const record = document as Record<string, unknown>
-  const auth = typeof record['auth'] === 'object' && record['auth'] !== null
-    ? record['auth'] as Record<string, unknown>
-    : record
-  const account = typeof record['account'] === 'object' && record['account'] !== null
-    ? record['account'] as Record<string, unknown>
-    : record
-
-  const accessToken = typeof auth['accessToken'] === 'string' ? auth['accessToken'] : ''
-  if (accessToken === '') return undefined
-
-  const expiresAtMs = typeof auth['expiresAt'] === 'number' ? auth['expiresAt'] : 0
-  const refreshExpiresAtMs = typeof auth['refreshExpiresAt'] === 'number' ? auth['refreshExpiresAt'] : undefined
-  const lastRefreshAtMs = typeof auth['lastRefreshTime'] === 'number' ? auth['lastRefreshTime'] : undefined
-  const uid = typeof account['uid'] === 'string' ? account['uid'] : ''
-  const enterpriseId = typeof account['enterpriseId'] === 'string' && account['enterpriseId'] !== ''
-    ? account['enterpriseId']
-    : undefined
-  const nickname = typeof account['nickname'] === 'string' && account['nickname'] !== ''
-    ? account['nickname']
-    : undefined
-  const domain = typeof auth['domain'] === 'string' ? auth['domain'] : ''
-
-  return {
-    accessToken,
-    refreshToken: typeof auth['refreshToken'] === 'string' ? auth['refreshToken'] : '',
-    expiresAtMs,
-    ...refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs },
-    domain,
-    uid,
-    ...enterpriseId === undefined ? {} : { enterpriseId },
-    ...nickname === undefined ? {} : { nickname },
-    source: 'desktop',
-    // Carried so the pool can rank backups by issuance time.
-    ...lastRefreshAtMs === undefined ? {} : { lastRefreshAtMs },
-    filePath,
-  } as WorkBuddyCredential & { filePath: string, lastRefreshAtMs?: number }
+  return parseCredentialText(text, filePath)
 }
 
 /**
@@ -240,6 +198,13 @@ export async function discoverAccounts(
     files.push(live)
     for (const backup of await backupsBeside(live)) files.push(backup)
   }
+  // Imported credentials are scanned alongside the app's own directory, but only
+  // when no explicit path was given: an explicit path means "read exactly this
+  // file", which is what the import UI uses to verify one credential in
+  // isolation and what a configured `authFile` expects.
+  if (explicitPath === undefined) {
+    for (const imported of await importedCredentialFiles()) files.push(imported)
+  }
 
   const byId = new Map<string, DiscoveredAccount>()
   for (const file of files) {
@@ -258,4 +223,20 @@ export async function discoverAccounts(
     if (existing === undefined || isFresher(found, existing, livePaths)) byId.set(id, found)
   }
   return [...byId.values()]
+}
+
+/**
+ * Every `.info` in the plugin's imported-credential directory.
+ *
+ * A missing or unreadable directory yields nothing: the app's own files are
+ * still scanned, and an absent import directory is the normal state.
+ */
+async function importedCredentialFiles(): Promise<string[]> {
+  try {
+    const dir = workbuddyImportedDir()
+    const entries = await readdir(dir)
+    return entries.filter(name => name.endsWith('.info')).map(name => join(dir, name))
+  } catch {
+    return []
+  }
 }

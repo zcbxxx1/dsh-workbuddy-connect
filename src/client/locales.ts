@@ -154,6 +154,15 @@ export const en = {
   poolCreditsUnlimited: 'unlimited',
   poolRecoversAt: 'back at',
   poolRecoversUnknown: 'no stated time',
+  poolImport: 'Import a credential',
+  poolImportHint: 'Add an account the desktop app does not hold — a .info file from another machine, or a credential pasted as text. The file is validated before it is stored, and the original bytes are kept as they are.',
+  poolImportFile: 'Choose a credential file',
+  poolImportPaste: 'Paste a credential',
+  poolImportPastePlaceholder: 'Paste the contents of a .info credential here',
+  poolImportRun: 'Import',
+  poolImportRemove: 'Remove',
+  poolImportUnreadable: 'unreadable import',
+  poolImportBroken: 'stored file no longer opens',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -307,4 +316,13 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   poolCreditsUnlimited: '不限',
   poolRecoversAt: '恢复于',
   poolRecoversUnknown: '未声明时间',
+  poolImport: '导入凭据',
+  poolImportHint: '添加桌面端没有的账号 —— 来自其他机器的 .info 文件，或直接粘贴凭据文本。文件在存储前会先校验，并原样保留其字节。',
+  poolImportFile: '选择凭据文件',
+  poolImportPaste: '粘贴凭据',
+  poolImportPastePlaceholder: '在此粘贴 .info 凭据的内容',
+  poolImportRun: '导入',
+  poolImportRemove: '移除',
+  poolImportUnreadable: '无法读取的导入项',
+  poolImportBroken: '已存文件无法打开',
 }

@@ -22,6 +22,7 @@ function document(overrides: Partial<WorkBuddyPoolDocument> = {}): WorkBuddyPool
     enabled: false,
     autoCheckin: false,
     accounts: [],
+    imported: [],
     poolKey: KEY,
     ...overrides,
   }

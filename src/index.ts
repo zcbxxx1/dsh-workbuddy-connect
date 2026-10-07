@@ -48,7 +48,8 @@ import { WorkBuddyPoolStore, workbuddyPoolPath } from './pool-store.ts'
 import { createPoolKey, registerWorkBuddyPoolRoute } from './pool-route.ts'
 import { checkinAccounts, type WorkBuddyCheckinRow } from './checkin.ts'
 import { accountIdOf } from './account-discovery.ts'
-import type { WorkBuddyPoolDocument, WorkBuddyWebCheckinRow, WorkBuddyWebPoolAccount } from './status-paths.ts'
+import { importCredentialText, listImportedCredentials, removeImportedCredential } from './credential-import.ts'
+import type { WorkBuddyPoolDocument, WorkBuddyWebCheckinRow, WorkBuddyWebImportedCredential, WorkBuddyWebPoolAccount } from './status-paths.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
@@ -841,6 +842,26 @@ export function apply(ctx: Context, config: Config): void {
     return entry
   }
 
+  /**
+   * The imported credentials, as the page lists them.
+   *
+   * Read fresh each time rather than cached: this is a directory listing of a
+   * handful of small files, and a stale list after an import or removal would
+   * make the button that just ran look like it did nothing.
+   */
+  const importedList = async (): Promise<readonly WorkBuddyWebImportedCredential[]> => {
+    const runtime = runtimes[0]
+    if (runtime === undefined) return []
+    const entries = await listImportedCredentials(async keyIds =>
+      await atRestKeyProviderFor(runtime.variant).protectorKeyFor([...keyIds]))
+    return entries.map(entry => ({
+      accountId: entry.accountId,
+      ...entry.accountName === undefined ? {} : { accountName: entry.accountName },
+      readable: entry.readable,
+      ...entry.reason === undefined ? {} : { reason: entry.reason },
+    }))
+  }
+
   /** Every discovered account across both products, as the page sees it. */
   const poolDocument = async (): Promise<WorkBuddyPoolDocument> => {
     // Membership is a bundle-level decision stored in the first runtime's file,
@@ -872,6 +893,7 @@ export function apply(ctx: Context, config: Config): void {
       enabled: poolSettings.enabled(),
       autoCheckin: poolSettings.autoCheckin(),
       accounts,
+      imported: await importedList(),
       ...lastCheckin === undefined ? {} : { lastCheckin },
       poolKey,
     }
@@ -1074,6 +1096,38 @@ export function apply(ctx: Context, config: Config): void {
       checkin: async (ids) => {
         const rows = await runCheckin(ids)
         return { state: 'ok', document: await poolDocument(), rows }
+      },
+      importCredential: async (text) => {
+        // Validate and store, then re-scan so the new account appears in the
+        // same answer: a user who imported a file should not have to press
+        // "re-detect" to see it.
+        const result = await importCredentialText(text, async keyIds => {
+          // Any variant's key provider opens the same at-rest envelopes on this
+          // machine — the two products currently seal under one secret — so the
+          // first runtime answers. A credential belonging to the other product
+          // still imports; it simply shows under that product's variant.
+          const runtime = runtimes[0]
+          if (runtime === undefined) throw new Error('no variant is available to open the credential')
+          return await atRestKeyProviderFor(runtime.variant).protectorKeyFor([...keyIds])
+        })
+        if (result.state !== 'ok') {
+          return { state: 'failed', reason: result.reason ?? 'the credential could not be imported' }
+        }
+        for (const runtime of runtimes) await runtime.accountPool.list(true)
+        return {
+          state: 'ok',
+          document: await poolDocument(),
+          imported: {
+            ...result.accountId === undefined ? {} : { accountId: result.accountId },
+            ...result.accountName === undefined ? {} : { accountName: result.accountName },
+            ...result.replaced === true ? { replaced: true } : {},
+          },
+        }
+      },
+      removeImported: async (accountId) => {
+        removeImportedCredential(accountId)
+        for (const runtime of runtimes) await runtime.accountPool.list(true)
+        return { state: 'ok', document: await poolDocument() }
       },
     })
     for (const runtime of runtimes) {
