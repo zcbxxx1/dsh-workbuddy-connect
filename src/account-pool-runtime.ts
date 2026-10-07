@@ -66,18 +66,29 @@ export interface WorkBuddyAccountPoolOptions {
  * transport failure is the gateway's problem rather than this account's — which
  * is why those get a cooldown instead of a permanent exclusion.
  */
-export function outcomeOfFailure(status: number, body: string): { outcome: WorkBuddyPoolOutcome, retryAtMs?: number, message: string } {
+export function outcomeOfFailure(
+  status: number,
+  body: string,
+  now = Date.now(),
+): { outcome: WorkBuddyPoolOutcome, retryAtMs?: number, message: string } {
   const message = body.slice(0, 200)
   if (status === 401 || status === 403) {
     return { outcome: 'credential-rejected', message }
   }
-  if (status === 429) {
-    return { outcome: 'rate-limited', message }
-  }
-  // The region's quota code, seen as `code=6004` with a reset sentence.
-  if (/"?code"?\s*[:=]\s*6004/u.test(body) || /usage exceeds frequency limit/iu.test(body)) {
-    const retryAtMs = parseResetTime(body)
-    return { outcome: 'rate-limited', ...retryAtMs === undefined ? {} : { retryAtMs }, message }
+  // A rate limit is decided BEFORE any bare-status branch below, because the
+  // upstream's limit names the exact instant the account comes back. Returning
+  // on the status alone discarded that time and fell back to a guessed cooldown,
+  // so the account sat out far longer than the upstream ever asked for.
+  //
+  // The body is consulted as well as the status: `code=6004` has been observed
+  // both with a 429 and with a 200, and only the body carries the reset time.
+  if (isRateLimited(status, body)) {
+    const retryAtMs = parseResetTime(body, now)
+    return {
+      outcome: 'rate-limited',
+      ...retryAtMs === undefined ? {} : { retryAtMs },
+      message,
+    }
   }
   if (/out of credit|insufficient|quota/iu.test(body)) {
     return { outcome: 'out-of-credit', message }
@@ -86,6 +97,19 @@ export function outcomeOfFailure(status: number, body: string): { outcome: WorkB
     return { outcome: 'failed', message }
   }
   return { outcome: 'unavailable', message }
+}
+
+/**
+ * Whether a failure is a rate limit.
+ *
+ * Three spellings are accepted because the upstream is not consistent: a bare
+ * 429, the region's business code `6004`, and the sentence that code arrives
+ * with. Checking the body as well as the status is what keeps the reset time
+ * reachable when a limit comes back as a 200.
+ */
+function isRateLimited(status: number, body: string): boolean {
+  if (status === 429) return true
+  return /"?code"?\s*[:=]\s*6004/u.test(body) || /usage exceeds frequency limit/iu.test(body)
 }
 
 /**
@@ -273,23 +297,42 @@ export class WorkBuddyAccountPool {
   /** Public snapshot for the status document. */
   async snapshot(): Promise<{
     enabled: boolean
-    accounts: { id: string, name: string, live: boolean, member: boolean, excludedBy?: string, expiresAtMs: number }[]
+    accounts: {
+      id: string
+      name: string
+      live: boolean
+      member: boolean
+      excludedBy?: string
+      /** When a cooldown ends, when the upstream stated one. */
+      excludedUntilMs?: number
+      expiresAtMs: number
+    }[]
   }> {
     const accounts = await this.list()
     const members = new Set(this.options.poolStore.members())
     const ranked = await this.ranked()
     const excluded = new Map(ranked.map(row => [row.account.id, row.excludedBy]))
+    const now = this.now()
     return {
       enabled: this.options.enabled(),
       accounts: accounts.map(account => {
         const id = accountIdOf(account.credential)
         const excludedBy = excluded.get(id)
+        const probe = this.options.poolStore.probeOf(id)
+        // The stated reset is reported only when the account is actually out,
+        // and only when upstream named one. A transient failure carries no
+        // time, so the page shows "unknown" rather than a fabricated countdown
+        // derived from the local fallback.
+        const until = probe?.retryAtMs
         return {
           id,
           name: account.credential.nickname ?? '',
           live: account.live,
           member: members.has(id),
           ...excludedBy === undefined ? {} : { excludedBy },
+          ...excludedBy === undefined || until === undefined || until <= now
+            ? {}
+            : { excludedUntilMs: until },
           expiresAtMs: account.credential.expiresAtMs,
         }
       }),

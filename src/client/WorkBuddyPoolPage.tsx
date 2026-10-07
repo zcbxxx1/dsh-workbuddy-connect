@@ -80,6 +80,15 @@ function AccountRow({ account, t, disabled, onToggle }: {
         : (
             <span style={dangerStyle} title={account.excludedReason ?? ''}>
               · {t('poolExcluded')}: {account.excludedBy}
+              {/*
+                The stated recovery instant, so "when does this come back" is
+                answerable from the page. Absent when upstream named no time
+                (a transport failure): saying "unknown" is honest, and a
+                countdown invented from the local fallback would not be.
+              */}
+              {account.excludedUntilMs === undefined
+                ? ` · ${t('poolRecoversUnknown')}`
+                : ` · ${t('poolRecoversAt')} ${new Date(account.excludedUntilMs).toLocaleString()}`}
             </span>
           )}
     </div>

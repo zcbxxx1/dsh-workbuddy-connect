@@ -858,6 +858,7 @@ export function apply(ctx: Context, config: Config): void {
           live: account.live,
           member: members.has(account.id),
           ...account.excludedBy === undefined ? {} : { excludedBy: account.excludedBy },
+          ...account.excludedUntilMs === undefined ? {} : { excludedUntilMs: account.excludedUntilMs },
           ...probe?.message === undefined || probe.message === '' ? {} : { excludedReason: probe.message },
           expiresAtMs: account.expiresAtMs,
           variant: runtime.variant.id,

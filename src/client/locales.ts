@@ -152,6 +152,8 @@ export const en = {
   poolCredits: 'credits',
   poolCreditsUnknown: 'unavailable',
   poolCreditsUnlimited: 'unlimited',
+  poolRecoversAt: 'back at',
+  poolRecoversUnknown: 'no stated time',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
@@ -303,4 +305,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   poolCredits: '积分',
   poolCreditsUnknown: '读取失败',
   poolCreditsUnlimited: '不限',
+  poolRecoversAt: '恢复于',
+  poolRecoversUnknown: '未声明时间',
 }

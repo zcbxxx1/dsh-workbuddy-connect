@@ -58,6 +58,15 @@ export interface WorkBuddyWebPoolAccount {
   excludedBy?: string
   /** The upstream's own words for the exclusion, already redacted. */
   excludedReason?: string
+  /**
+   * When the account is usable again, epoch ms.
+   *
+   * Present when the upstream stated a reset, which is the rate-limit case.
+   * ABSENT when it did not — an account excluded without a stated time (a
+   * transport failure) has no honest countdown, and the page must say "unknown"
+   * rather than invent one.
+   */
+  excludedUntilMs?: number
   /** Credential expiry, epoch ms. */
   expiresAtMs: number
   /** Which product this account belongs to (`workbuddy` / `workbuddy-ai`). */

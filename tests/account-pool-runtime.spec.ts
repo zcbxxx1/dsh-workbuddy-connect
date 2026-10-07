@@ -232,8 +232,11 @@ describe('parseResetTime', () => {
   })
 
   it('accepts a colon-bearing offset and agrees with the plain form', () => {
-    expect(parseResetTime('reset at 2026-10-07 00:06:26 UTC+8'))
-      .toBe(parseResetTime('reset at 2026-10-07 00:06:26 UTC+08:00'))
+    // Fixed clock: without one the clamp to `Date.now()` makes both sides
+    // depend on when the suite runs.
+    const now = Date.parse('2026-10-06T00:00:00Z')
+    expect(parseResetTime('reset at 2026-10-07 00:06:26 UTC+8', now))
+      .toBe(parseResetTime('reset at 2026-10-07 00:06:26 UTC+08:00', now))
   })
 
   it('returns undefined when no time is stated', () => {
