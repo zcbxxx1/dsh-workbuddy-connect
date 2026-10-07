@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { createCipheriv, createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  EMBEDDED_AT_REST_SECRET_KEY,
   WorkBuddyAtRestKeyProvider,
   WORKBUDDY_ELECTRON_BIN_ENV,
   buildAuthenticatedContextAad,
@@ -314,6 +315,86 @@ describe('at-rest key provider', () => {
     const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => PAYLOAD_TEXT })
     await expect(provider.protectorKeyFor(['ffffffffffffffff']))
       .rejects.toThrow(/does not match/)
+  })
+
+  describe('embedded at-rest key', () => {
+    /**
+     * The embedded constant lets a credential file be opened where the desktop
+     * app is not installed — Linux, a container, or a machine whose app was
+     * removed. It is the shipped protector, not a per-install secret, so these
+     * tests pin both halves of the contract: it answers when the app cannot,
+     * and it never displaces an app that can.
+     */
+    const EMBEDDED_KEY = deriveProtectorKey(EMBEDDED_AT_REST_SECRET_KEY)
+    const EMBEDDED_ID = createHash('sha256').update(EMBEDDED_KEY).digest('hex').slice(0, 16)
+
+    it('derives the key id a real credential names', () => {
+      // The provenance claim in the source: this constant is the protector that
+      // sealed real 5.6.x envelopes, so its derived id must be the one an
+      // actual credential carries. A wrong constant would derive a different id
+      // and every embedded-path decryption would fail with an auth error.
+      expect(EMBEDDED_ID).toBe('9127dea1b44020a7')
+    })
+
+    it('opens envelopes when no Electron binary can be reached', async () => {
+      const provider = new WorkBuddyAtRestKeyProvider({
+        product: electronProfileFor(CN_VARIANT),
+        discovery: 'none',
+        source: async () => { throw new Error('no WorkBuddy Electron binary is configured for this platform') },
+      })
+      expect(await provider.protectorKeyFor([EMBEDDED_ID])).toEqual(EMBEDDED_KEY)
+    })
+
+    it('round-trips a sealed field with the embedded key alone', async () => {
+      // End to end: a document sealed by the shipped protector, opened with no
+      // app present, through the same classify/unwrap path production uses.
+      const document = JSON.stringify({
+        auth: { accessToken: sealAuthFieldForTest(EMBEDDED_KEY, 'token-under-embedded-key'), refreshToken: 'plain' },
+        account: { uid: 'uid-9' },
+      })
+      const key = await new WorkBuddyAtRestKeyProvider({
+        product: electronProfileFor(CN_VARIANT),
+        discovery: 'none',
+        source: async () => { throw new Error('unreachable') },
+      }).protectorKeyFor([EMBEDDED_ID])
+      const classified = classifyDesktopAuthDocument(document)
+      expect(classified.format).toBe('encrypted')
+      if (classified.format !== 'encrypted') return
+      const opened = unwrapDesktopAuthDocument(classified, wrapped => openAuthField(key, wrapped.envelope) ?? '')
+      expect((JSON.parse(opened) as { auth: { accessToken: string } }).auth.accessToken)
+        .toBe('token-under-embedded-key')
+    })
+
+    it('prefers the app key whenever the app answers with a matching id', async () => {
+      const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => PAYLOAD_TEXT })
+      expect(await provider.protectorKeyFor([KEY_ID])).toEqual(KEY)
+    })
+
+    it('falls back when the reachable app reports a key that does not match', async () => {
+      // A machine can hold envelopes sealed by a different build than the app
+      // now installed. Reaching the app proves nothing about the envelope, so
+      // the id match — not the spawn's success — decides.
+      const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => PAYLOAD_TEXT })
+      expect(await provider.protectorKeyFor([EMBEDDED_ID])).toEqual(EMBEDDED_KEY)
+    })
+
+    it('reports the mismatch when neither key fits', async () => {
+      const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => PAYLOAD_TEXT })
+      await expect(provider.protectorKeyFor(['ffffffffffffffff'])).rejects.toThrow(/does not match/)
+    })
+
+    it('surfaces the original failure when the policy disables the fallback', async () => {
+      // Strict mode must still name why the app could not supply a key rather
+      // than reporting a bogus mismatch.
+      const provider = new WorkBuddyAtRestKeyProvider({
+        product: electronProfileFor(CN_VARIANT),
+        discovery: 'none',
+        embeddedKeyPolicy: 'disabled',
+        source: async () => { throw new Error('no WorkBuddy Electron binary is configured for this platform') },
+      })
+      await expect(provider.protectorKeyFor([EMBEDDED_ID]))
+        .rejects.toThrow(/no WorkBuddy Electron binary is configured/)
+    })
   })
 
   it('reports an unusable payload without echoing its content', async () => {

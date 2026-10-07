@@ -750,6 +750,15 @@ declare function variantFor(id: string): WorkBuddyVariant | undefined;
 //#region src/desktop-credential-protection.d.ts
 /** The four states a desktop auth document can be read as. */
 type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized';
+/**
+ * Whether the embedded key may be used, and what to call it in diagnostics.
+ *
+ * Kept as an explicit switch rather than an unconditional fallback: silently
+ * opening envelopes with a shipped constant would mask the difference between
+ * "this machine can reach the app" and "this machine is trusting a constant",
+ * and the signed-out reason codes the card renders depend on that distinction.
+ */
+type EmbeddedKeyPolicy = 'fallback' | 'disabled';
 /** The spawned helper. Separated from the provider so tests can stand it in. */
 type WorkBuddyKeyPayloadSource = () => Promise<string>;
 /**
@@ -835,6 +844,12 @@ interface WorkBuddyAtRestKeyProviderOptions {
    * waiting out the production 10s.
    */
   discoveryBudgetMs?: number;
+  /**
+   * Whether {@link EMBEDDED_AT_REST_SECRET_KEY} may open envelopes the app's
+   * own key could not. Defaults to `'fallback'`; `'disabled'` restores the
+   * strict behaviour of requiring a reachable WorkBuddy binary.
+   */
+  embeddedKeyPolicy?: EmbeddedKeyPolicy;
 }
 /**
  * In-memory protector-key resolver: one spawn per key id, single-flight, never
@@ -866,6 +881,10 @@ interface WorkBuddyAtRestKeyProviderOptions {
   private discoveredPath;
   private cache;
   private inflight;
+  /** Whether {@link EMBEDDED_AT_REST_SECRET_KEY} may answer when the app cannot. */
+  private readonly embeddedPolicy;
+  /** The embedded constant, derived once. */
+  private embedded;
   constructor(options: WorkBuddyAtRestKeyProviderOptions);
   /**
    * The binary the default helper would use, for diagnostics.
@@ -885,6 +904,13 @@ interface WorkBuddyAtRestKeyProviderOptions {
    * reach will open them.
    */
   protectorKeyFor(requested: readonly string[]): Promise<Buffer>;
+  /**
+   * The embedded constant as a resolved key, or `undefined` when this provider
+   * may not use it or it does not answer the requested ids.
+   *
+   * Cached like an app-resolved key so the derivation runs once.
+   */
+  private embeddedKey;
   private ingest;
   /**
    * The binary to spawn, or a diagnosable error saying why there is none.
@@ -1035,6 +1061,16 @@ declare class WorkBuddyCredentialStore {
   ownAuthPath(): string;
   /** Read the freshest stored credential without refreshing anything. */
   current(): Promise<WorkBuddyCredential | undefined>;
+  /**
+   * The imported account this variant is assigned to, or `undefined` when
+   * none is (no import directory, no match, or an unreadable file — which the
+   * discovery scan reports on the pool page instead of failing resolution).
+   *
+   * Deliberately after the desktop/own precedence: a live sign-in always wins
+   * over an imported copy of the same or any other account, so installing the
+   * app later simply takes over.
+   */
+  private readImported;
   /**
    * The credential to send upstream: {@link current}, refreshed on demand.
    * Single-flight, so parallel requests share one refresh.

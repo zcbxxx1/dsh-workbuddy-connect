@@ -175,6 +175,31 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 `logout` 只删除该版插件自留的凭据副本，不动桌面 App 自己的登录，也不承诺一定让模型分组消失。
 
+## 凭据解密与内置密钥（本 fork 新增）
+
+WorkBuddy 5.6+ 把 `auth.accessToken` / `auth.refreshToken` 加密落盘，密钥来自 App 自己的私有绑定：
+
+```js
+process._linkedBinding('electron_browser_workbuddy_storage').loggerGet()
+// → {"version":1,"atRestSecretKey":"Sik9U5aXhCdwTVEwsEySDOmDoB9r9ntFxHF1fst9LQI=",...}
+```
+
+上游的做法是**启动 App 自带的 Electron** 去取这个值，于是必须有 WorkBuddy 桌面 App 才能解密。但该绑定**只在 macOS / Windows 有自动定位**；Linux（含容器）直接返回 `undefined`，报错：
+
+```text
+no WorkBuddy Electron binary is configured for this platform;
+set WORKBUDDY_ELECTRON_BIN to the app's Electron binary
+```
+
+**本 fork 因此把该密钥作为内置回退值写入插件**，使解密不再依赖 App 的存在：
+
+- **优先级**：先尝试从 App 获取（这是唯一能跟上上游更换密钥的路径）；仅当 App 无法访问，**或 App 返回的密钥打不开当前信封时**，才使用内置值。判定依据是 **keyId 是否匹配**，而不是"是否成功启动了 App"——同一台机器上可能同时存在由不同 WorkBuddy 版本写下的凭据文件。
+- **派生链**：`protectorKey = sha256(atRestSecretKey 的 UTF-8 字节)`（32 字节）→ `keyId = sha256(protectorKey).hex[:16]`。本内置值派生出 `keyId = 9127dea1b44020a7`，与真实 5.6.x 凭据内的 `keyId` 一致。
+- **解密**：AES-256-GCM；AAD 54 字节，长度前缀为**大端**（`writeUInt32BE`）——写成小端会得到 `Unsupported state or unable to authenticate data`，容易被误判为密钥错误。
+- **关闭回退**：把 provider 的 `embeddedKeyPolicy` 设为 `'disabled'`，即恢复"必须有可达的 WorkBuddy 二进制"的严格行为。
+
+> **⚠️ 安全说明（请务必阅读）**：这个密钥是 **WorkBuddy 客户端内置的固定公开常量**，不是每台机器/每个用户独有的秘密——任何装有 WorkBuddy 的机器都能读出同一个值。把它写进插件**并没有新增泄露面**，但也意味着插件的这层保护是**格式，而非机密性**：**拿到该常量 + 任意一份凭据文件，就能解出其中的 token**。请按"凭据文件一旦泄露即等同于 token 泄露"来处理。
+
 ## 已知限制
 
 - 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（0.3.2 起要求 `0.1.5-rc.1`+、Node 22+）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
