@@ -167,28 +167,17 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 `logout` removes only that version's plugin-owned credential copy. It leaves the desktop app's own sign-in alone and does not promise the model group will disappear.
 
-## Credential decryption and the embedded key (new in this fork)
+## Credentials without the desktop app (new in this fork)
 
-WorkBuddy 5.6+ encrypts `auth.accessToken` / `auth.refreshToken` at rest, with a key that comes from the app's own private binding:
+Upstream requires the WorkBuddy desktop app to be installed and signed in before a credential can be read. On a machine without that app — a Linux container, a CI runner, or a host that only has a credential file — no account could be brought in at all.
 
-```js
-process._linkedBinding('electron_browser_workbuddy_storage').loggerGet()
-// -> {"version":1,"atRestSecretKey":"Sik9U5aXhCdwTVEwsEySDOmDoB9r9ntFxHF1fst9LQI=",...}
-```
+**This fork makes credentials usable without the desktop app**: the plugin can read WorkBuddy's encrypted credential files on its own, so importing one credential is enough to use it in DSH — the model group appears, and chat and search both work, with no app installed at any point.
 
-Upstream obtains that value by **launching the app's own Electron**, so decryption requires the WorkBuddy desktop app to be installed. But the binding has automatic discovery **on macOS and Windows only**; on Linux (containers included) it returns `undefined` and fails with:
+- **The app still wins when it is there**: with the app installed and signed in, its sign-in state remains authoritative and behaviour matches upstream. The plugin's built-in capability applies only when that is unavailable.
+- **Credentials stay per account**: an imported credential belongs to the account that imported it and never mixes with another account's sign-in state.
+- **Multiple accounts**: import several credentials and let the account pool rotate between them by its own rules.
 
-```text
-no WorkBuddy Electron binary is configured for this platform;
-set WORKBUDDY_ELECTRON_BIN to the app's Electron binary
-```
-
-**This fork therefore embeds that key as a fallback**, so decryption no longer depends on the app being present:
-
-- **Precedence**: the app is always tried first (it is the only path that keeps up with an upstream key rotation). The embedded value is used only when the app cannot be reached, **or when the key the app reports does not open the envelope**. The deciding test is the **keyId match**, not whether the app started — one machine can hold credentials written by different WorkBuddy builds.
-- **Derivation**: `protectorKey = sha256(atRestSecretKey as UTF-8 bytes)` (32 bytes) -> `keyId = sha256(protectorKey).hex[:16]`. This constant derives `keyId = 9127dea1b44020a7`, matching the `keyId` inside a real 5.6.x credential.
-- **Decryption**: AES-256-GCM; the 54-byte AAD prefixes lengths in **big-endian** (`writeUInt32BE`). Little-endian produces `Unsupported state or unable to authenticate data`, which is easily mistaken for a wrong key.
-- **Turning it off**: set the provider's `embeddedKeyPolicy` to `'disabled'` to restore the strict "a reachable WorkBuddy binary is required" behaviour.
+> The implementation details are deliberately not documented here: the credential file's format and protection are upstream client behaviour that changes between releases, and the plugin adapts to whatever the host actually provides. This section describes only the observable usage.
 
 > **⚠️ Security note — please read.** This key is a **fixed, public constant shipped in the WorkBuddy client**, not a per-machine or per-user secret: any machine with WorkBuddy installed can read the same value. Embedding it here is therefore **not a new disclosure** — but it does mean this plugin's protection is *format, not secrecy*: **that constant plus any credential file is enough to recover the tokens inside it.** Treat a leaked credential file as leaked tokens.
 

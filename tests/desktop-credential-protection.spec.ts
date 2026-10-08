@@ -329,10 +329,10 @@ describe('at-rest key provider', () => {
     const EMBEDDED_ID = createHash('sha256').update(EMBEDDED_KEY).digest('hex').slice(0, 16)
 
     it('derives the key id a real credential names', () => {
-      // The provenance claim in the source: this constant is the protector that
-      // sealed real 5.6.x envelopes, so its derived id must be the one an
-      // actual credential carries. A wrong constant would derive a different id
-      // and every embedded-path decryption would fail with an auth error.
+      // The constant must be the protector that sealed real envelopes: a wrong
+      // value derives a different id, and every embedded-path open then fails
+      // with an authentication error. This pins the value's correctness without
+      // restating how it was obtained.
       expect(EMBEDDED_ID).toBe('9127dea1b44020a7')
     })
 

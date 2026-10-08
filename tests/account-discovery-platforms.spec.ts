@@ -43,12 +43,25 @@ function restorePlatform(): void {
  * `homedir()` reads `USERPROFILE` on win32 and `HOME` elsewhere, so both are
  * set. Stubbing the function directly would not help: `auth.ts` calls it once
  * per invocation and caches nothing, but the OS env is what it actually reads.
+ *
+ * `DSH_HOME` is redirected too, and that one is not cosmetic: discovery also
+ * scans the plugin's imported-credential directory under `$DSH_HOME`, so a
+ * developer machine with real imports would leak those accounts into every
+ * case here and break assertions about the platform paths under test.
  */
-const savedEnv = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'], XDG_CONFIG_HOME: process.env['XDG_CONFIG_HOME'], XDG_DATA_HOME: process.env['XDG_DATA_HOME'] }
+const savedEnv = {
+  HOME: process.env['HOME'],
+  USERPROFILE: process.env['USERPROFILE'],
+  XDG_CONFIG_HOME: process.env['XDG_CONFIG_HOME'],
+  XDG_DATA_HOME: process.env['XDG_DATA_HOME'],
+  DSH_HOME: process.env['DSH_HOME'],
+}
 
 function stubHome(home: string): void {
   process.env['HOME'] = home
   process.env['USERPROFILE'] = home
+  // An empty per-test harness home, so imports never reach the real one.
+  process.env['DSH_HOME'] = home
   delete process.env['XDG_CONFIG_HOME']
   delete process.env['XDG_DATA_HOME']
 }
