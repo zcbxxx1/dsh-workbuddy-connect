@@ -14,6 +14,9 @@ import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { regionOf } from './upstream.ts'
+import { accountIdOf, readAuthFile } from './account-discovery.ts'
+import { assignedVariantOf } from './account-assignments.ts'
+import { importedCredentialFiles } from './credential-paths.ts'
 import {
   WorkBuddyAtRestKeyProvider,
   WorkBuddyElectronPathError,
@@ -393,17 +396,57 @@ export class WorkBuddyCredentialStore {
         }
       }
     }
-    if (desktop === undefined) return own
-    if (own === undefined) return desktop
-    // Identity beats expiry. The plugin's own copy is written by its own
-    // refreshes, so after the user switches accounts in the desktop app the copy
-    // still belongs to the *previous* account — and may well expire later,
-    // because the plugin refreshed it. Preferring it by expiry would send the old
-    // account's uid in `X-User-Id` and answer as the wrong user. The desktop
-    // file is the authority on who is signed in now; a differing identity means
-    // the copy is stale regardless of its timestamp.
-    if (desktop.uid !== own.uid || desktop.enterpriseId !== own.enterpriseId) return desktop
-    return own.expiresAtMs > desktop.expiresAtMs ? own : desktop
+    const desktopOrOwn = desktop === undefined
+      ? own
+      : own === undefined
+        ? desktop
+        // Identity beats expiry. The plugin's own copy is written by its own
+        // refreshes, so after the user switches accounts in the desktop app the
+        // copy still belongs to the *previous* account — and may well expire
+        // later, because the plugin refreshed it. Preferring it by expiry would
+        // send the old account's uid in `X-User-Id` and answer as the wrong
+        // user. The desktop file is the authority on who is signed in now; a
+        // differing identity means the copy is stale regardless of its
+        // timestamp.
+        : (desktop.uid !== own.uid || desktop.enterpriseId !== own.enterpriseId)
+          ? desktop
+          : own.expiresAtMs > desktop.expiresAtMs ? own : desktop
+    if (desktopOrOwn !== undefined) return desktopOrOwn
+    // No app-side credential: fall through to the imported accounts this
+    // variant is assigned. This is what makes an imported credential usable
+    // without the desktop app or the pool — the model group appears and the
+    // chat path resolves, exactly as a live sign-in would. Imports are the
+    // user's explicit act, so region mismatches are not guarded here: the
+    // endpoint follows the credential's own domain (`chatBase`), and the
+    // assignment table decides which variant presents the account.
+    return this.readImported()
+  }
+
+  /**
+   * The imported account this variant is assigned to, or `undefined` when
+   * none is (no import directory, no match, or an unreadable file — which the
+   * discovery scan reports on the pool page instead of failing resolution).
+   *
+   * Deliberately after the desktop/own precedence: a live sign-in always wins
+   * over an imported copy of the same or any other account, so installing the
+   * app later simply takes over.
+   */
+  private async readImported(): Promise<WorkBuddyCredential | undefined> {
+    for (const imported of await importedCredentialFiles()) {
+      let credential: WorkBuddyCredential | undefined
+      try {
+        credential = await readAuthFile(imported, keyIds => this.keyProvider.protectorKeyFor(keyIds))
+      } catch {
+        // An unreadable import is skipped here, not fatal: discovery reports
+        // it on the pool page, where the user can remove or re-import it.
+        continue
+      }
+      if (credential === undefined) continue
+      const id = accountIdOf(credential)
+      if (id === '') continue
+      if (assignedVariantOf(id) === this.variant?.id) return credential
+    }
+    return undefined
   }
 
   /**

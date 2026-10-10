@@ -9,7 +9,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { hostIsLoopback, originIsLoopback } from './loopback.ts'
+import { requestIsTrusted, type TrustedAuthorities } from './loopback.ts'
 import { WORKBUDDY_UPDATE_PATH } from './status-paths.ts'
 import { checkWorkBuddyUpdate, WORKBUDDY_UPDATE_TIMEOUT_MS } from './update.ts'
 import type { WorkBuddyUpdateFetch, WorkBuddyUpdateResult } from './update.ts'
@@ -21,6 +21,14 @@ export interface WorkBuddyUpdateRouteOptions {
   currentVersion: string
   fetchImpl?: WorkBuddyUpdateFetch
   timeoutMs?: number
+  /**
+   * Non-loopback authorities this deployment serves, taken from the host's
+   * `webRuntime` when it provides one.
+   *
+   * Omitted or empty means loopback-only, so a headless profile or a test that
+   * does not opt in keeps the strict fence.
+   */
+  trustedHosts?: TrustedAuthorities
 }
 
 function json(res: ServerResponse, status: number, value: unknown): void {
@@ -34,9 +42,9 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.end(payload)
 }
 
-/** The same browser-origin gate the status route uses: DNS-rebinding pages die here. */
-function browserRequestAllowed(req: IncomingMessage): boolean {
-  return hostIsLoopback(req.headers.host) && originIsLoopback(req.headers.origin)
+/** The same deployment-trust gate the status route uses: a rebound page dies here. */
+function browserRequestAllowed(req: IncomingMessage, trustedHosts: TrustedAuthorities): boolean {
+  return requestIsTrusted(req.headers.host, req.headers.origin, trustedHosts)
 }
 
 /** Build the route handler; the caller owns registration and disposal. */
@@ -46,7 +54,7 @@ export function workBuddyUpdateHandler(options: WorkBuddyUpdateRouteOptions): (r
       json(res, 405, { error: 'method not allowed' })
       return
     }
-    if (!browserRequestAllowed(req)) {
+    if (!browserRequestAllowed(req, options.trustedHosts)) {
       json(res, 403, { error: 'forbidden' })
       return
     }

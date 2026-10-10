@@ -107,7 +107,20 @@ describe('WorkBuddyCatalogStore', () => {
   })
 
   it('survives an unwritable path without throwing', () => {
-    const store = new WorkBuddyCatalogStore({ path: '/proc/definitely-not-writable/catalog.json' })
+    // The unwritable target is a path whose parent is a regular FILE, so every
+    // write beneath it fails with ENOTDIR at once.
+    //
+    // This deliberately avoids `/proc/...`: `mkdirSync(dir, { recursive: true })`
+    // under a procfs mount does not fail there, it BLOCKS — the call never
+    // returns and never throws, so the suite hangs instead of asserting. It
+    // also avoids permission bits, because the suite runs as root in containers
+    // where a mode-0500 directory is still writable, which would make this test
+    // pass without exercising anything. ENOTDIR is prompt under both.
+    const dir = mkdtempSync(join(tmpdir(), 'wb-catalog-blocked-'))
+    CLEANUP.push(dir)
+    const blocker = join(dir, 'not-a-directory')
+    writeFileSync(blocker, 'this file stands where a directory would have to be')
+    const store = new WorkBuddyCatalogStore({ path: join(blocker, 'catalog.json') })
     // Saving is best-effort: the plugin has already served these models, and a
     // failed write must not surface as a crash.
     expect(() => store.set('uid-1:ent-1', { source: 's', fetchedAtMs: 1, models: [model('a')] })).not.toThrow()

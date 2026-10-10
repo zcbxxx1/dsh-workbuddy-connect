@@ -113,6 +113,63 @@ describe('reads', () => {
   })
 })
 
+describe('a deployment served on a declared authority', () => {
+  const HOST = 'mssshield.uk:43080'
+  const trusted = () => options({ trustedHosts: [HOST] })
+
+  it('answers a read addressed to the declared authority', async () => {
+    // The regression: `dsh web --trusted-host <authority>` serves the GUI on a
+    // real hostname, so the page's own same-origin fetch carries it in Host and
+    // Origin. A loopback-only gate answered every such read with 403, and the
+    // pool page rendered "读取账号池失败: HTTP 403".
+    await withServer(trusted(), async ({ port }) => {
+      const res = await raw(port, { headers: { Host: HOST, Origin: `http://${HOST}` } })
+      expect(res.status).toBe(200)
+      expect((JSON.parse(res.body) as WorkBuddyPoolDocument).poolKey).toBe(KEY)
+    })
+  })
+
+  it('answers a read from the declared authority with no Origin', async () => {
+    await withServer(trusted(), async ({ port }) => {
+      expect((await raw(port, { headers: { Host: HOST } })).status).toBe(200)
+    })
+  })
+
+  it('still refuses an undeclared authority', async () => {
+    await withServer(trusted(), async ({ port }) => {
+      expect((await raw(port, { headers: { Host: 'evil.example' } })).status).toBe(403)
+    })
+  })
+
+  it('still refuses a cross-origin read from the declared authority', async () => {
+    await withServer(trusted(), async ({ port }) => {
+      const res = await raw(port, { headers: { Host: HOST, Origin: 'http://evil.example' } })
+      expect(res.status).toBe(403)
+    })
+  })
+
+  it('still refuses a rebound page', async () => {
+    // Declaring an authority must not weaken rebinding protection: the rebound
+    // page sends the attacker's domain in Host, which is not declared.
+    await withServer(trusted(), async ({ port }) => {
+      expect((await raw(port, { headers: { Host: 'evil.example', Origin: 'http://evil.example' } })).status).toBe(403)
+    })
+  })
+
+  it('still requires the in-process key for a write', async () => {
+    // The trust gate admits the request; authorization is still separate, so a
+    // page on the declared authority cannot mutate without the key.
+    await withServer(trusted(), async ({ port }) => {
+      const res = await raw(port, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'rediscover' }),
+        headers: { Host: HOST, Origin: `http://${HOST}`, 'Content-Type': 'application/json' },
+      })
+      expect(res.status).toBe(403)
+    })
+  })
+})
+
 describe('writes', () => {
   const post = (port: number, body: unknown, headers: Record<string, string> = { 'x-workbuddy-pool-key': KEY }) =>
     raw(port, { method: 'POST', body: JSON.stringify(body), headers })

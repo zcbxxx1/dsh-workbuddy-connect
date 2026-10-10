@@ -17,7 +17,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { hostIsLoopback, originIsLoopback } from './loopback.ts'
+import { requestIsTrusted, type TrustedAuthorities } from './loopback.ts'
 import { WORKBUDDY_POOL_PATH } from './status-paths.ts'
 import type { WorkBuddyPoolAction, WorkBuddyPoolActionAnswer, WorkBuddyPoolDocument } from './status-paths.ts'
 
@@ -62,9 +62,9 @@ async function readBody(req: IncomingMessage): Promise<string | undefined> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-/** The same browser-origin gate the status route uses: DNS-rebinding pages die here. */
-function browserRequestAllowed(req: IncomingMessage): boolean {
-  return hostIsLoopback(req.headers.host) && originIsLoopback(req.headers.origin)
+/** The same deployment-trust gate the status route uses: a rebound page dies here. */
+function browserRequestAllowed(req: IncomingMessage, trustedHosts: TrustedAuthorities): boolean {
+  return requestIsTrusted(req.headers.host, req.headers.origin, trustedHosts)
 }
 
 /** Constructor dependencies. */
@@ -95,6 +95,14 @@ export interface WorkBuddyPoolRouteOptions {
   key: string
   /** Route path to mount. Defaults to the shared path. */
   path?: string
+  /**
+   * Non-loopback authorities this deployment serves, taken from the host's
+   * `webRuntime` when it provides one.
+   *
+   * Omitted or empty means loopback-only, so a headless profile or a test that
+   * does not opt in keeps the strict fence.
+   */
+  trustedHosts?: TrustedAuthorities
 }
 
 /**
@@ -114,7 +122,7 @@ export function workBuddyPoolHandler(
   options: WorkBuddyPoolRouteOptions,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
-    if (!browserRequestAllowed(req)) {
+    if (!browserRequestAllowed(req, options.trustedHosts)) {
       json(res, 403, { error: 'request-not-trusted' })
       return
     }

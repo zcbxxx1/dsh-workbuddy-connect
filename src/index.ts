@@ -545,6 +545,27 @@ function createVariantRuntime(
 }
 
 /** The catalog provenance the card displays. */
+/**
+ * The authorities the host's own browser fence accepts, as a Web deployment
+ * declares them (`dsh web --trusted-host …`, plus the LAN literals it derives).
+ *
+ * `webRuntime` belongs to `@deepseek-ai/dsh-web-app`, which is not a dependency
+ * of this plugin — importing its type would make a Web-only package a compile
+ * requirement of a plugin that also runs under TUI and headless profiles. The
+ * access is therefore checked structurally instead of asserted: an absent
+ * service, a foreign shape, or a non-string entry all degrade to `undefined`,
+ * which every route reads as "loopback only". A host that changes this shape
+ * loses the relaxed fence and returns to the strict one — it never broadens.
+ */
+function readTrustedHosts(ctx: Context): readonly string[] | undefined {
+  const runtime: unknown = (ctx as { get?: (name: string) => unknown }).get?.('webRuntime')
+  if (typeof runtime !== 'object' || runtime === null) return undefined
+  const list = (runtime as { trustedHosts?: unknown }).trustedHosts
+  if (!Array.isArray(list)) return undefined
+  const entries = list.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
+  return entries.length === 0 ? undefined : entries
+}
+
 function catalogSection(runtime: VariantRuntime): WorkBuddyWebCatalog {
   const fetch = runtime.client.lastCatalog
   return {
@@ -1064,9 +1085,32 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   ctx.inject(['webServer'], webCtx => {
+    /**
+     * The deployment's own non-loopback authorities, as the host's browser
+     * fence sees them.
+     *
+     * `dsh web --host 0.0.0.0 --trusted-host <authority>` serves the GUI on a
+     * real hostname and tells its own `/api` fence to accept it. The plugin's
+     * routes share that deployment, so they must accept it too — otherwise the
+     * card and the pool page load their shells and then 403 on every read.
+     *
+     * Read through `ctx.get` rather than an `inject` so the routes do not
+     * acquire a hard dependency on a service a non-Web profile never provides:
+     * a headless or TUI host has no `webRuntime`, and those routes are then
+     * loopback-only, exactly as before.
+     *
+     * Resolved through a getter, not once here: `webRuntime` is provided by
+     * `@deepseek-ai/dsh-web-app` from inside ITS OWN `webServer` inject, and
+     * sibling bundles mounted in the same pass can reach their inject callback
+     * first. Reading at mount therefore observed `undefined` and left every
+     * route loopback-only on a host that had in fact declared the authority —
+     * the 403 this change exists to fix. A getter reads at request time, after
+     * the whole tree has settled.
+     */
+    const trustedHosts = (): readonly string[] | undefined => readTrustedHosts(webCtx)
     // One update route for the whole bundle: it answers this npm package's
     // public version metadata only, so it is per-plugin, not per-variant.
-    registerWorkBuddyUpdateRoute(webCtx, { currentVersion: WORKBUDDY_CONNECT_VERSION })
+    registerWorkBuddyUpdateRoute(webCtx, { currentVersion: WORKBUDDY_CONNECT_VERSION, trustedHosts })
     // The Anthropic-Messages search endpoint, so DSH's own `web_search` tool
     // can be pointed at this plugin instead of a DeepSeek endpoint:
     //   web-search-deepseek.baseURL = <dsh web origin>/plugins/dsh-workbuddy-connect/search
@@ -1074,6 +1118,7 @@ export function apply(ctx: Context, config: Config): void {
     // routes to the same capability, and a user may want either.
     registerWorkBuddySearchGatewayRoute(webCtx, {
       credential: resolveSearchCredential,
+      trustedHosts,
       ...config.searchMaxResults === undefined ? {} : { maxResults: config.searchMaxResults },
     })
     // The account pool's page and its writes. One route for both variants: the
@@ -1081,6 +1126,7 @@ export function apply(ctx: Context, config: Config): void {
     // make it read two documents to render one list.
     registerWorkBuddyPoolRoute(webCtx, {
       key: poolKey,
+      trustedHosts,
       snapshot: () => poolDocument(),
       // Rotation and auto check-in live in the pool file rather than in the
       // plugin config: DSH 0.2.0 removed the section API that used to persist
@@ -1141,6 +1187,7 @@ export function apply(ctx: Context, config: Config): void {
         path: runtime.variant.statusPath,
         store: runtime.store,
         client: runtime.client,
+        trustedHosts,
         models: () => runtime.catalog.current(),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
@@ -1166,6 +1213,7 @@ export function apply(ctx: Context, config: Config): void {
       })
       registerWorkBuddyProbeRoute(webCtx, {
         path: runtime.variant.probePath,
+        trustedHosts,
         probe: async modelId => {
           // The authenticated manual endpoint is called only after per-model confirmation.
           const result = await runtime.probeService.probe(modelId, true)

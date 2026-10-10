@@ -37,6 +37,37 @@ import type { WorkBuddyElectronProduct, WorkBuddyVariant } from './variants.ts'
 export type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized'
 
 /**
+ * The at-rest secret WorkBuddy's desktop apps seal their credential envelopes
+ * with, embedded so a credential can be opened without the desktop app.
+ *
+ * The value is a fixed constant of the WorkBuddy client rather than a
+ * per-install or per-user secret: every installation of a given client build
+ * uses the same protector, which is why it can be embedded at all. It is kept
+ * here, in code, deliberately — it is not read from the environment or from any
+ * user-supplied setting, so there is nothing for a deployment to configure and
+ * nothing for a config file to leak.
+ *
+ * It is only a FALLBACK. A payload the app itself supplies always wins, so a
+ * future WorkBuddy that rotates its protector still works through the app path;
+ * see {@link WorkBuddyAtRestKeyProvider}.
+ *
+ * The surrounding format details are upstream client behaviour that changes
+ * between releases, and are intentionally not documented here: this module
+ * implements what was measured, and the tests pin the observable contract.
+ */
+export const EMBEDDED_AT_REST_SECRET_KEY = 'Sik9U5aXhCdwTVEwsEySDOmDoB9r9ntFxHF1fst9LQI='
+
+/**
+ * Whether the embedded key may be used, and what to call it in diagnostics.
+ *
+ * Kept as an explicit switch rather than an unconditional fallback: silently
+ * opening envelopes with a shipped constant would mask the difference between
+ * "this machine can reach the app" and "this machine is trusting a constant",
+ * and the signed-out reason codes the card renders depend on that distinction.
+ */
+export type EmbeddedKeyPolicy = 'fallback' | 'disabled'
+
+/**
  * Env variable naming an explicit Electron binary for the CN product. The
  * international product has its own ({@link WorkBuddyElectronProduct.envVar}
  * on each variant); a shared variable is a single point of failure across two
@@ -515,6 +546,12 @@ export interface WorkBuddyAtRestKeyProviderOptions {
    * waiting out the production 10s.
    */
   discoveryBudgetMs?: number
+  /**
+   * Whether {@link EMBEDDED_AT_REST_SECRET_KEY} may open envelopes the app's
+   * own key could not. Defaults to `'fallback'`; `'disabled'` restores the
+   * strict behaviour of requiring a reachable WorkBuddy binary.
+   */
+  embeddedKeyPolicy?: EmbeddedKeyPolicy
 }
 
 /**
@@ -680,6 +717,10 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
   private discoveredPath: string | undefined
   private cache: ResolvedKey | undefined
   private inflight: Promise<ResolvedKey> | undefined
+  /** Whether {@link EMBEDDED_AT_REST_SECRET_KEY} may answer when the app cannot. */
+  private readonly embeddedPolicy: EmbeddedKeyPolicy
+  /** The embedded constant, derived once. */
+  private embedded: ResolvedKey | undefined
 
   constructor(options: WorkBuddyAtRestKeyProviderOptions) {
     this.product = options.product
@@ -690,6 +731,7 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
     // an error, not an invitation to go looking for another app.
     this.explicitPath = options.electronPath ?? envPath
     this.discovery = options.discovery ?? 'none'
+    this.embeddedPolicy = options.embeddedKeyPolicy ?? 'fallback'
     this.platform = options.platform ?? process.platform
     this.defaultPath = this.discovery === 'none'
       ? undefined
@@ -735,19 +777,60 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
     }
     const cached = this.cache
     if (cached !== undefined && requested.includes(cached.keyId)) return cached.key
-    this.inflight ??= this.source().then(text => this.ingest(text))
-      .finally(() => {
-        this.inflight = undefined
-      })
-    const resolved = await this.inflight
-    if (!requested.includes(resolved.keyId)) {
+    // The app's own payload is preferred and is the only path that survives an
+    // upstream protector rotation, so it is always tried first. The embedded
+    // constant answers when the app cannot be reached at all — no binary for
+    // this platform, none configured, discovery failed — AND when the app
+    // answered with a key that does not open these envelopes.
+    //
+    // That second case is the whole point of the fallback. A machine can hold
+    // credential files written by more than one WorkBuddy build: the binary
+    // present today reports its own current secret, while the envelope on disk
+    // was sealed by the shipped protector this constant names. Reaching the app
+    // successfully therefore proves nothing about the envelope, so the match
+    // test — not the spawn's success — decides.
+    let reachable: ResolvedKey | undefined
+    let failure: unknown
+    try {
+      this.inflight ??= this.source().then(text => this.ingest(text))
+        .finally(() => {
+          this.inflight = undefined
+        })
+      reachable = await this.inflight
+    } catch (error: unknown) {
+      failure = error
+    }
+    if (reachable !== undefined && requested.includes(reachable.keyId)) return reachable.key
+    const embedded = this.embeddedKey()
+    if (embedded !== undefined && requested.includes(embedded.keyId)) return embedded.key
+    // Neither key opens these envelopes. Report the app's answer when there was
+    // one (it names the key ids that would work), else the reason it failed.
+    if (reachable !== undefined) {
       throw new WorkBuddyElectronPathError(
         'encrypted-credential-unreadable',
-        `WorkBuddy's current at-rest key (id ${resolved.keyId}) does not match the credential's envelope (id ${requested.join(' or ')});`
+        `WorkBuddy's current at-rest key (id ${reachable.keyId}) does not match the credential's envelope (id ${requested.join(' or ')});`
         + ' the desktop credential was sealed by a different WorkBuddy installation',
       )
     }
-    return resolved.key
+    throw failure
+  }
+
+  /**
+   * The embedded constant as a resolved key, or `undefined` when this provider
+   * may not use it or it does not answer the requested ids.
+   *
+   * Cached like an app-resolved key so the derivation runs once.
+   */
+  private embeddedKey(): ResolvedKey | undefined {
+    if (this.embeddedPolicy === 'disabled') return undefined
+    if (this.embedded !== undefined) return this.embedded
+    const key = deriveProtectorKey(EMBEDDED_AT_REST_SECRET_KEY)
+    const resolved: ResolvedKey = {
+      key,
+      keyId: createHash('sha256').update(key).digest('hex').slice(0, 16),
+    }
+    this.embedded = resolved
+    return resolved
   }
 
   private ingest(text: string): ResolvedKey {

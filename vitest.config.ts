@@ -13,5 +13,21 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.spec.ts'],
     environment: 'node',
+    /**
+     * Pin `NODE_ENV` for every test file.
+     *
+     * React picks its build from `process.env.NODE_ENV` at import time:
+     * `production` loads `react.production.min.js`, whose `act()` is a stub
+     * that throws “act(...) is not supported in production builds of React”.
+     * A shell that exports `NODE_ENV=production` — a container image, a CI
+     * runner, an IDE launch config — therefore failed all 19 composer tests
+     * for a reason that has nothing to do with the code under test.
+     *
+     * Pinning it here keeps the suite self-contained: the result depends on the
+     * config, not on the ambient shell.
+     */
+    env: {
+      NODE_ENV: 'test',
+    },
   },
 })

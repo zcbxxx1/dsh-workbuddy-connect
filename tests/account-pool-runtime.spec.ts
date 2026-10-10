@@ -9,7 +9,7 @@
 
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { accountIdOf, backupsBeside, discoverAccounts, readAuthFile } from '../src/account-discovery.ts'
 import { outcomeOfFailure, parseResetTime } from '../src/account-pool-runtime.ts'
@@ -71,7 +71,10 @@ describe('backupsBeside', () => {
     writeFileSync(join(dir, 'workbuddy-desktop.info'), '{}')
 
     const found = await backupsBeside(live)
-    expect(found.map(path => path.split('\\').pop())).toEqual([
+    // `basename` rather than splitting on `\\`: these are absolute paths built
+    // by `join` from the platform's own separator, so a backslash split only
+    // strips a directory on Windows and left the whole path on POSIX.
+    expect(found.map(path => basename(path))).toEqual([
       'workbuddy-desktop-ai.2026-09-20T10-00-00Z.2.b.info',
       'workbuddy-desktop-ai.2026-09-16T10-00-00Z.1.a.info',
     ])

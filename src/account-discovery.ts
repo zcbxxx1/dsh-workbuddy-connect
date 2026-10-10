@@ -37,7 +37,8 @@ import {
 import type { WorkBuddyVariant } from './variants.ts'
 import { desktopAuthCandidatesFor } from './auth.ts'
 import { parseCredentialText } from './credential-parse.ts'
-import { workbuddyImportedDir } from './credential-paths.ts'
+import { importedCredentialFiles } from './credential-paths.ts'
+import { assignedVariantOf } from './account-assignments.ts'
 
 /** One discovered account, with the file it was read from. */
 export interface DiscoveredAccount {
@@ -203,7 +204,7 @@ export async function discoverAccounts(
   // file", which is what the import UI uses to verify one credential in
   // isolation and what a configured `authFile` expects.
   if (explicitPath === undefined) {
-    for (const imported of await importedCredentialFiles()) files.push(imported)
+    for (const imported of importedCredentialFiles()) files.push(imported)
   }
 
   const byId = new Map<string, DiscoveredAccount>()
@@ -214,6 +215,14 @@ export async function discoverAccounts(
     // An account with no uid cannot be pooled: it has no stable identity, so
     // two files without one would collapse into a single member.
     if (id === '') continue
+    // Imported files are visible to BOTH variants' scans (the import directory
+    // is shared and a credential never names its product), so an account would
+    // otherwise serve under both model groups at once. The assignment table is
+    // the per-account answer; an unassigned account takes the configured
+    // default (WorkBuddy AI). Desktop-file paths keep the live sign-in where
+    // the app wrote it — the assignment governs imported accounts, which have
+    // no app of their own.
+    if (livePaths.includes(file) === false && assignedVariantOf(id) !== variant.id) continue
     const found: DiscoveredAccount = {
       credential,
       filePath: file,
@@ -226,17 +235,10 @@ export async function discoverAccounts(
 }
 
 /**
- * Every `.info` in the plugin's imported-credential directory.
- *
- * A missing or unreadable directory yields nothing: the app's own files are
- * still scanned, and an absent import directory is the normal state.
+ * Imported credentials are listed by {@link importedCredentialFiles} in
+ * `credential-paths.ts` (shared with the credential store, which must not
+ * import this module). They are scanned alongside the app's own directory,
+ * but only when no explicit path was given: an explicit path means "read
+ * exactly this file", which is what the import UI uses to verify one
+ * credential in isolation and what a configured `authFile` expects.
  */
-async function importedCredentialFiles(): Promise<string[]> {
-  try {
-    const dir = workbuddyImportedDir()
-    const entries = await readdir(dir)
-    return entries.filter(name => name.endsWith('.info')).map(name => join(dir, name))
-  } catch {
-    return []
-  }
-}
