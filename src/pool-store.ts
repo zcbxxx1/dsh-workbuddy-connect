@@ -265,4 +265,24 @@ export class WorkBuddyPoolStore {
     this.cached = next
     this.cachedMtimeMs = Date.now()
   }
+
+  /**
+   * Forget EVERY measurement, keeping the membership list.
+   *
+   * What "re-detect accounts" has to mean to a user whose pool looks stuck: the
+   * membership is their decision and survives, while the observations — which
+   * are the plugin's, and which can hold an account out for a stated or guessed
+   * cooldown — are dropped so every member is a candidate from the next request.
+   *
+   * Without this the button only re-read the credential DIRECTORY, so a state
+   * recorded against an account could not be cleared from the UI at all: remove
+   * the account, delete its file, re-import it, press re-detect — the record
+   * stayed, because every one of those paths writes `members` and leaves
+   * `probes` untouched.
+   */
+  clearProbes(): void {
+    const document = this.load()
+    if (Object.keys(document.probes).length === 0) return
+    this.write({ ...document, probes: {} })
+  }
 }

@@ -59,12 +59,39 @@ export interface WorkBuddyAccountPoolOptions {
 }
 
 /**
+ * Whether a failure says anything about the ACCOUNT.
+ *
+ * A transport failure (`status === 0`: DNS, refused connection, TLS, a dropped
+ * socket) is a fact about the network at that instant, not about the credential
+ * that happened to be in flight. Recording it against the account turns one
+ * network blip into a pool-wide outage: every account is asked over the same
+ * link, so they all fail together and all get benched together — and the fixed
+ * cooldown then keeps them out long after the network came back. Observed live:
+ * four accounts benched inside 55 seconds, still paused 16 minutes later with
+ * the network healthy again.
+ *
+ * So an account-level outcome is recorded only when the answer was actually
+ * about the account. A transport failure is reported to the caller and left
+ * unrecorded, which leaves the account a candidate for the next request — the
+ * behaviour that makes a transient outage self-healing.
+ */
+export function describesAccount(status: number): boolean {
+  // 0 is the shim's own marker for "the request never reached upstream". No
+  // HTTP status is 0, so this cannot collide with a real answer.
+  return status !== 0
+}
+
+/**
  * Classify an upstream failure into a pool outcome.
  *
  * Mirrors the distinctions the upstream actually draws: a 401 means this token
  * is refused (sign in again), a 429 or the quota code means wait, and a 5xx or
  * transport failure is the gateway's problem rather than this account's — which
  * is why those get a cooldown instead of a permanent exclusion.
+ *
+ * Callers that feed a pool must gate on {@link describesAccount} first: the
+ * outcome below is what a *recorded* failure means, and a transport failure has
+ * no business being recorded at all.
  */
 export function outcomeOfFailure(
   status: number,

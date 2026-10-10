@@ -1090,6 +1090,12 @@ export function apply(ctx: Context, config: Config): void {
       setMembers: (ids) => { poolSettings.setMembers(ids) },
       setAutoCheckin: (enabled) => { poolSettings.setAutoCheckin(enabled) },
       rediscover: async () => {
+        // Clear the measurements as well as re-reading the directory. To a user
+        // whose pool looks stuck this button means "start over", and a member
+        // held out by a recorded cooldown is exactly what they are trying to
+        // clear — re-reading the files alone could never do that, which is why
+        // removing and re-importing an account changed nothing.
+        for (const runtime of runtimes) runtime.poolStore.clearProbes()
         for (const runtime of runtimes) await runtime.accountPool.list(true)
         return await poolDocument()
       },

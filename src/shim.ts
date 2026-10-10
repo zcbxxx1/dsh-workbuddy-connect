@@ -20,7 +20,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Readable } from 'node:stream'
 import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
 import { accountIdOf } from './account-discovery.ts'
-import { outcomeOfFailure } from './account-pool-runtime.ts'
+import { describesAccount, outcomeOfFailure } from './account-pool-runtime.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { extractDisplayErrorMessage, prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
@@ -239,7 +239,14 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
     // Feed the outcome back to the pool so the NEXT request starts from a
     // measurement instead of rediscovering the same wall. Only an enabled pool
     // has a place to record it.
-    if (pool !== undefined) {
+    //
+    // A transport failure is deliberately NOT recorded. It describes the network
+    // at that instant, not the credential in flight, and every account is asked
+    // over the same link — so recording it benches the whole pool at once and
+    // holds it there for the fixed cooldown even after the network recovers.
+    // Leaving it unrecorded keeps every account a candidate for the next
+    // request, which is what makes a blip self-healing.
+    if (pool !== undefined && (result.ok || describesAccount(result.status))) {
       try {
         const accountId = accountIdOf(credential)
         if (result.ok) {
