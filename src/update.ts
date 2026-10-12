@@ -1,13 +1,14 @@
 /**
  * Public update metadata and bounded version checking for WorkBuddy Connect.
  *
- * Two upstreams, strictly layered so the judgement never depends on the
- * enrichment: npm's dist-tags decide whether a newer release exists, and only
- * then is GitHub's release list consulted — one request that feeds both the
- * "versions behind" count and the per-release notes. Every upstream answer is
- * treated as untrusted input: bodies are size-capped while streaming, releases
- * are re-validated on the browser side by {@link parseWorkBuddyUpdateResult}
- * before anything renders.
+ * Two sources, strictly layered so the judgement never depends on the
+ * enrichment: this FORK's git tags decide whether a newer release exists
+ * (upstream's npm dist-tags describe a different release line and are not
+ * consulted — see {@link WORKBUDDY_REPOSITORY_URL}), and only then is the
+ * release list consulted — one request that feeds both the "versions behind"
+ * count and the per-release notes. Every answer is treated as untrusted input:
+ * bodies are size-capped while streaming, releases are re-validated on the
+ * browser side by {@link parseWorkBuddyUpdateResult} before anything renders.
  *
  * This module is host/browser shared and dependency-free by design (the client
  * bundle's runtime imports stay React + local modules only).
@@ -15,11 +16,35 @@
  * @module dsh-workbuddy-connect/update
  */
 
-export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/corrinehu/dsh-workbuddy-connect'
+/**
+ * This fork's own repository, not upstream's.
+ *
+ * The update check must point at the repository a user of THIS build should
+ * install from. Upstream publishes the same package name on npm, so npm's
+ * `latest` dist-tag describes upstream's release line, never this fork's: a
+ * user told to "update to 0.7.4" would fetch upstream's tarball and silently
+ * lose the account pool, `workbuddy_search` and the `--trusted-host` fix.
+ * The fork therefore decides "is there a newer release" from its OWN git tags.
+ */
+export const WORKBUDDY_REPOSITORY_URL = 'https://github.com/zcbxxx1/dsh-workbuddy-connect'
 export const WORKBUDDY_UPDATE_PACKAGE_NAME = 'dsh-workbuddy-connect'
+/**
+ * The fork's tag list, which is where its released versions live: our releases
+ * are tagged in git even when no GitHub Release object exists. This is the
+ * authority for "is a newer version available".
+ */
+export const WORKBUDDY_UPDATE_TAGS_API_URL = `${WORKBUDDY_REPOSITORY_URL.replace('https://github.com', 'https://api.github.com/repos')}/tags?per_page=100`
+/**
+ * Upstream's npm dist-tags. Retained for reference only — it is deliberately
+ * NOT consulted by {@link checkWorkBuddyUpdate}, because it describes the
+ * upstream release line rather than this fork's.
+ */
 export const WORKBUDDY_UPDATE_NPM_METADATA_URL = `https://registry.npmjs.org/-/package/${WORKBUDDY_UPDATE_PACKAGE_NAME}/dist-tags`
+/** Release notes enrichment; unauthenticated calls are rate-limited in practice. */
 export const WORKBUDDY_UPDATE_RELEASES_API_URL = `${WORKBUDDY_REPOSITORY_URL.replace('https://github.com', 'https://api.github.com/repos')}/releases?per_page=100`
 export const WORKBUDDY_RELEASE_PAGE_BASE = `${WORKBUDDY_REPOSITORY_URL}/releases/tag/`
+/** Tag-list and release-list pages are both capped at 100 entries. */
+export const WORKBUDDY_UPDATE_TAGS_MAX_BYTES = 256 * 1024
 export const WORKBUDDY_UPDATE_TIMEOUT_MS = 8_000
 export const WORKBUDDY_UPDATE_MAX_METADATA_BYTES = 64 * 1024
 export const WORKBUDDY_UPDATE_MAX_RELEASES_BYTES = 1024 * 1024
@@ -197,19 +222,44 @@ function cleanPublishedAt(value: unknown): string | undefined {
 }
 
 /**
- * The `latest` dist-tag only. Pre-release channels are not this plugin's
- * release line, so recommending one would be wrong even when newer.
+ * The newest stable version in the fork's own tag list.
+ *
+ * Both the `tag`/`name` shapes GitHub's tags API returns are accepted. Tags
+ * that do not parse as a version are skipped, and so are pre-releases
+ * (`v0.8.0-rc.1`): a release candidate is not this plugin's release line, so
+ * recommending one would be wrong even when newer. Upstream got that guarantee
+ * for free from npm's `latest` dist-tag, which never carries a pre-release;
+ * reading tags directly means the filter has to be explicit here.
+ *
+ * Returns undefined when the payload is not a usable list at all — which the
+ * caller reports as an unavailable check rather than "up to date". The value
+ * is canonicalized (no leading `v`, no build metadata) so callers can derive a
+ * release URL from it without doubling the `v`.
  */
-function latestDistTag(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
-  const tags = (value as Record<string, unknown>)['dist-tags'] ?? value
-  if (typeof tags !== 'object' || tags === null || Array.isArray(tags)) return undefined
-  const candidate = (tags as Record<string, unknown>)['latest']
-  return typeof candidate === 'string' && parseWorkBuddyVersion(candidate) !== undefined ? candidate : undefined
+function latestTaggedVersion(value: unknown): string | undefined {
+  if (!Array.isArray(value) || value.length > RELEASES_LIST_MAX) return undefined
+  let newest: string | undefined
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue
+    const entry = raw as Record<string, unknown>
+    const tag = typeof entry['name'] === 'string' ? entry['name'] : entry['tag']
+    if (typeof tag !== 'string') continue
+    const parsed = parseWorkBuddyVersion(tag)
+    if (parsed === undefined || parsed.prerelease.length > 0) continue
+    if (newest === undefined || compareWorkBuddyVersions(tag, newest) > 0) newest = tag
+  }
+  return newest === undefined ? undefined : canonicalWorkBuddyVersion(newest)
 }
 
+/**
+ * The release page for a version. Our tags are spelled `v0.7.3` but the
+ * canonical version carries no prefix, so the `v` is added here — once. The
+ * input is normalized first, which keeps a preferred tag spelling (`v0.7.3`)
+ * from producing `vv0.7.3`.
+ */
 export function releasePageUrl(version: string): string {
-  return `${WORKBUDDY_RELEASE_PAGE_BASE}v${version}`
+  const canonical = canonicalWorkBuddyVersion(version) ?? version.replace(/^v/u, '')
+  return `${WORKBUDDY_RELEASE_PAGE_BASE}v${canonical}`
 }
 
 /**
@@ -265,7 +315,12 @@ async function releaseList(
   }
 }
 
-/** Check npm's public dist-tags and enrich an available update with release notes. */
+/**
+ * Check the fork's own tag list and enrich an available update with release notes.
+ *
+ * The tag list decides; the release list only enriches (notes and count), so a
+ * rate-limited GitHub API degrades the detail without losing the judgement.
+ */
 export async function checkWorkBuddyUpdate(options: {
   currentVersion: string
   fetchImpl?: WorkBuddyUpdateFetch
@@ -277,17 +332,17 @@ export async function checkWorkBuddyUpdate(options: {
   }
   const fetchImpl = options.fetchImpl ?? fetch
   const timeoutMs = options.timeoutMs ?? WORKBUDDY_UPDATE_TIMEOUT_MS
-  let metadata: unknown
+  let tags: unknown
   try {
     const { response, text } = await fetchBounded(
       fetchImpl,
-      WORKBUDDY_UPDATE_NPM_METADATA_URL,
-      WORKBUDDY_UPDATE_MAX_METADATA_BYTES,
+      WORKBUDDY_UPDATE_TAGS_API_URL,
+      WORKBUDDY_UPDATE_TAGS_MAX_BYTES,
       timeoutMs,
-      { accept: 'application/json' },
+      { accept: 'application/vnd.github+json' },
     )
     if (!response.ok) return { status: 'unavailable', currentVersion, reason: 'registry-unavailable' }
-    metadata = JSON.parse(text) as unknown
+    tags = JSON.parse(text) as unknown
   } catch (error: unknown) {
     return {
       status: 'unavailable',
@@ -295,7 +350,7 @@ export async function checkWorkBuddyUpdate(options: {
       reason: error instanceof SyntaxError || error instanceof RangeError ? 'invalid-registry-response' : 'registry-unavailable',
     }
   }
-  const latestVersion = latestDistTag(metadata)
+  const latestVersion = latestTaggedVersion(tags)
   if (latestVersion === undefined) return { status: 'unavailable', currentVersion, reason: 'invalid-registry-response' }
   if (compareWorkBuddyVersions(latestVersion, currentVersion) <= 0) {
     return { status: 'up-to-date', currentVersion, latestVersion: currentVersion }

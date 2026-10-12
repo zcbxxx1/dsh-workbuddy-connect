@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { workBuddyUpdateHandler } from '../src/update-route.ts'
 import type { WorkBuddyUpdateRouteOptions } from '../src/update-route.ts'
 import { WORKBUDDY_UPDATE_PATH } from '../src/status-paths.ts'
-import { WORKBUDDY_UPDATE_NPM_METADATA_URL, WORKBUDDY_UPDATE_RELEASES_API_URL } from '../src/update.ts'
+import { WORKBUDDY_UPDATE_RELEASES_API_URL, WORKBUDDY_UPDATE_TAGS_API_URL } from '../src/update.ts'
 
 /** The update route answers loopback GETs only and fails closed upstream. */
 
@@ -18,8 +18,8 @@ async function startServer(): Promise<number> {
   const server = createServer(workBuddyUpdateHandler({
     currentVersion: '0.6.3',
     fetchImpl: async (input: string) => {
-      if (input === WORKBUDDY_UPDATE_NPM_METADATA_URL) {
-        return new Response(JSON.stringify({ 'dist-tags': { latest: '0.6.3' } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      if (input === WORKBUDDY_UPDATE_TAGS_API_URL) {
+        return new Response(JSON.stringify([{ name: 'v0.6.3', commit: { sha: '0'.repeat(40) } }]), { status: 200, headers: { 'content-type': 'application/json' } })
       }
       if (input === WORKBUDDY_UPDATE_RELEASES_API_URL) {
         return new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } })

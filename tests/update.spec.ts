@@ -6,14 +6,14 @@ import {
   parseWorkBuddyUpdateResult,
   parseWorkBuddyVersion,
   releasePageUrl,
-  WORKBUDDY_UPDATE_NPM_METADATA_URL,
   WORKBUDDY_UPDATE_RELEASES_API_URL,
+  WORKBUDDY_UPDATE_TAGS_API_URL,
 } from '../src/update.ts'
 
 /**
- * The update check in three layers, each degrading on its own: the npm
- * judgement, the GitHub enrichment, and the browser-side re-validation of
- * whatever the host route answered.
+ * The update check in three layers, each degrading on its own: the judgement
+ * from this fork's own git tags, the release-notes enrichment, and the
+ * browser-side re-validation of whatever the host route answered.
  */
 
 function jsonResponse(body: unknown, options: { padBytes?: number } = {}): Response {
@@ -22,9 +22,18 @@ function jsonResponse(body: unknown, options: { padBytes?: number } = {}): Respo
   return new Response(text, { status: 200, headers: { 'content-type': 'application/json' } })
 }
 
-function npmFetch(distTags: Record<string, string>, releases: unknown[] | 'fail' = []): WorkBuddyUpdateFetch {
+/** A tag-list entry as GitHub's tags API returns it. */
+function tagEntry(name: string): Record<string, unknown> {
+  return { name, commit: { sha: '0'.repeat(40) } }
+}
+
+/**
+ * The fork's own tag list decides, so the fake serves that endpoint. The
+ * release list stays the separate enrichment request it always was.
+ */
+function tagFetch(tags: string[], releases: unknown[] | 'fail' = []): WorkBuddyUpdateFetch {
   return async (input: string) => {
-    if (input === WORKBUDDY_UPDATE_NPM_METADATA_URL) return jsonResponse({ 'dist-tags': distTags })
+    if (input === WORKBUDDY_UPDATE_TAGS_API_URL) return jsonResponse(tags.map(tagEntry))
     if (input === WORKBUDDY_UPDATE_RELEASES_API_URL) {
       if (releases === 'fail') throw new Error('github unavailable')
       return jsonResponse(releases)
@@ -47,13 +56,19 @@ describe('version comparison', () => {
   })
 })
 
-describe('the npm judgement', () => {
-  it('reads only the latest dist-tag', async () => {
-    const fetchImpl = npmFetch({ latest: '0.6.3', beta: '0.7.0-beta.1' }, 'fail')
-    // The beta tag is newer but is not this plugin's release line; up-to-date
-    // must hold without GitHub ever being asked.
+describe('the tag judgement', () => {
+  it('takes the newest stable tag and ignores pre-releases', async () => {
+    const fetchImpl = tagFetch(['v0.6.3', 'v0.7.0-beta.1', 'v0.6.2'], 'fail')
+    // The pre-release tag is newer but is not this plugin's release line;
+    // up-to-date must hold without the release list ever being asked.
     const result = await checkWorkBuddyUpdate({ currentVersion: '0.6.3', fetchImpl })
     expect(result).toEqual({ status: 'up-to-date', currentVersion: '0.6.3', latestVersion: '0.6.3' })
+  })
+
+  it('orders tags numerically, so 0.6.10 beats 0.6.9', async () => {
+    const result = await checkWorkBuddyUpdate({ currentVersion: '0.6.9', fetchImpl: tagFetch(['v0.6.9', 'v0.6.10'], 'fail') })
+    // The tag is spelled `v0.6.10`; the reported version is canonical.
+    expect(result).toMatchObject({ status: 'update-available', latestVersion: '0.6.10' })
   })
 
   it('fails closed on an unparseable current version without any request', async () => {
@@ -66,27 +81,28 @@ describe('the npm judgement', () => {
   it.each([
     ['a registry error', async () => new Response('nope', { status: 500 }), 'registry-unavailable'],
     ['a malformed document', async () => jsonResponse('not-json'.repeat(1) as unknown), 'invalid-registry-response'],
-    ['a dist-tag that does not parse', async () => jsonResponse({ 'dist-tags': { latest: 'x.y.z' } }), 'invalid-registry-response'],
+    ['a payload that is not a tag list', async () => jsonResponse({ message: 'rate limited' }), 'invalid-registry-response'],
+    ['a tag list with no parseable version', async () => jsonResponse([tagEntry('release-candidate')]), 'invalid-registry-response'],
   ])('reports unavailable for %s', async (_label, respond, reason) => {
     const result = await checkWorkBuddyUpdate({ currentVersion: '0.6.3', fetchImpl: respond as WorkBuddyUpdateFetch })
     expect(result).toMatchObject({ status: 'unavailable', reason })
   })
 
-  it('rejects an oversized registry body while streaming', async () => {
+  it('rejects an oversized tag body while streaming', async () => {
     // The padding is real body text, not a header claim: the reader must hit
     // the cap while consuming the stream.
     const result = await checkWorkBuddyUpdate({
       currentVersion: '0.6.3',
-      fetchImpl: async () => jsonResponse({ 'dist-tags': { latest: '0.6.4' } }, { padBytes: 65 * 1024 }),
+      fetchImpl: async () => jsonResponse([tagEntry('v0.6.4')], { padBytes: 257 * 1024 }),
     })
     expect(result).toEqual({ status: 'unavailable', currentVersion: '0.6.3', reason: 'invalid-registry-response' })
   })
 })
 
-describe('the GitHub enrichment', () => {
+describe('the release-notes enrichment', () => {
   it('keeps only releases in (current, latest], newest first, and counts them', async () => {
-    const fetchImpl = npmFetch(
-      { latest: '0.6.4' },
+    const fetchImpl = tagFetch(
+      ['v0.6.4'],
       [
         releaseEntry('v0.6.2'),
         releaseEntry('v0.6.4', { name: 'v0.6.4：归因修复', body: '- fix one\n- fix two' }),
@@ -105,17 +121,17 @@ describe('the GitHub enrichment', () => {
   })
 
   it('keeps the judgement when GitHub fails, dropping only the enrichment', async () => {
-    const result = await checkWorkBuddyUpdate({ currentVersion: '0.6.3', fetchImpl: npmFetch({ latest: '0.6.4' }, 'fail') })
+    const result = await checkWorkBuddyUpdate({ currentVersion: '0.6.3', fetchImpl: tagFetch(['v0.6.4'], 'fail') })
     expect(result).toMatchObject({ status: 'update-available', latestVersion: '0.6.4', releases: [] })
     expect(result).not.toHaveProperty('versionsBehind')
   })
 
-  it('never contacts GitHub when the dist-tags say up-to-date', async () => {
+  it('never asks for release notes when the tags say up-to-date', async () => {
     const github = vi.fn()
     const result = await checkWorkBuddyUpdate({
       currentVersion: '0.6.3',
-      fetchImpl: async input => input === WORKBUDDY_UPDATE_NPM_METADATA_URL
-        ? jsonResponse({ 'dist-tags': { latest: '0.6.3' } })
+      fetchImpl: async input => input === WORKBUDDY_UPDATE_TAGS_API_URL
+        ? jsonResponse([tagEntry('v0.6.3')])
         : (github(), jsonResponse([])),
     })
     expect(result).toMatchObject({ status: 'up-to-date' })
@@ -125,8 +141,8 @@ describe('the GitHub enrichment', () => {
 
 describe('release dedupe by SemVer value', () => {
   it('folds duplicate spellings of one version into a single release', async () => {
-    const fetchImpl = npmFetch(
-      { latest: '0.6.4' },
+    const fetchImpl = tagFetch(
+      ['v0.6.4'],
       [
         releaseEntry('v0.6.4'),
         releaseEntry('0.6.4'),

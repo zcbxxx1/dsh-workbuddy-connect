@@ -111,6 +111,10 @@ Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin r
 
 A mismatched combination fails to start DSH. See the upstream README for the full historical table.
 
+> **This fork's update check points at this repository.** The in-plugin update reminder (the floating panel) and the "let an Agent upgrade" prompt both name [`zcbxxx1/dsh-workbuddy-connect`](https://github.com/zcbxxx1/dsh-workbuddy-connect), and a newer version is decided from **this repository's git tags**. Upstream publishes a package of the same name on npm, where `latest` describes upstream's release line rather than this fork's: deciding from npm would, the moment upstream ships a release, tell users to upgrade using upstream's install command — swapping this fork's account pool, `workbuddy_search` and `--trusted-host` fix for upstream's code. This fork therefore no longer queries npm.
+>
+> That also means **a new version is only detected once a tag is pushed to this repository** (spelled like `v0.7.3`). This repository's tags currently stop at `v0.7.1`, so a running `0.7.3` reports that it is already up to date.
+
 ### Installing this fork
 
 **Install this repository, not the same-named package on npm.** This fork's work is unreleased, so `@0.7.1` resolves to upstream code.
