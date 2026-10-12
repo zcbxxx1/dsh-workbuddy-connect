@@ -20,6 +20,14 @@
  * The allow-list is the token set from DSH's client `Theme` inspect provider.
  * `--dsw-shadow-*` is deliberately absent — the theme exposes no shadow token,
  * so a shadow must be a literal rather than a variable resolving to nothing.
+ *
+ * `--dsw-alias-label-tertiary` and `--dsw-alias-state-warn-tertiary` are NOT in
+ * that builtin inspect list (14 tokens), but they are real tokens: DSH's theme
+ * bundle defines both in its light and dark alias maps
+ * (`@deepseek-ai/dsh-client-ui-theme`, each `: var(--dsw-static-…)`). The
+ * inspect list is the documented subset, not the full token directory —
+ * `Theme.exportInspectTokens()` merges registered theme and override names on
+ * top of it. Both are listed here so the check matches the real theme.
  */
 
 import { readFileSync, readdirSync } from 'node:fs'
@@ -37,10 +45,12 @@ const THEME_TOKENS = new Set([
   '--dsw-alias-brand-primary',
   '--dsw-alias-label-primary',
   '--dsw-alias-label-secondary',
+  '--dsw-alias-label-tertiary',
   '--dsw-alias-state-error-primary',
   '--dsw-alias-state-idle-primary',
   '--dsw-alias-state-success-primary',
   '--dsw-alias-state-warn-primary',
+  '--dsw-alias-state-warn-tertiary',
   '--dsw-specific-sidebar-fill',
 ])
 
